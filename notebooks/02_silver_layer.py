@@ -3,9 +3,10 @@
 # MAGIC # Krishi-Kavach | 02 — Silver Layer · Triangulation Engine (Production)
 # MAGIC **Purpose:** Process Bronze tables and triangulate 3 signals (Weather, Market, Social) to compute a high-confidence parametric insurance trigger.
 # MAGIC 
-# MAGIC ### 🐛 Bugfix Note (v2.1): 
-# MAGIC Switched from day-of-month joins to full `event_date` joins to prevent cross-month data corruption.
-| Signal | Component | Source Table | Weight |
+# MAGIC ### 🐛 Bugfix Note (v2.2): 
+# MAGIC Fixed alphabetical month sorting bug. Switched to `date_int` (epoch) for the 7-day rolling window to guarantee chronological integrity.
+# MAGIC 
+# MAGIC | Signal | Component | Source Table | Weight |
 |--------|-----------|--------------|--------|
 | Signal A | Weather Anomaly | `imd_rainfall` | 50% |
 | Signal B | Market Stress | `mandi_prices` | 25% |
@@ -24,7 +25,7 @@ SILVER_SINK = "dbfs:/FileStore/krishi_kavach/silver/confirmed_triggers"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Load & Pre-process Datasets (Bugfix: Harmonize District & Date)
+# MAGIC ## 1. Load & Pre-process Datasets (Harmonize District & Date)
 
 # COMMAND ----------
 
@@ -40,11 +41,12 @@ month_map = F.create_map([F.lit(x) for x in [
 ]])
 
 # ── Standardize Rainfall (Signal A) ──────────────────────────────────────────
-# Bugfix: Construct full event_date from year + month abbreviation + day
+# Bugfix: Construct full event_date and date_int (epoch) for chronological sorting
 df_rain_processed = (
     df_rain_raw
     .withColumn("month_int", month_map[F.col("month")].cast("int"))
     .withColumn("event_date", F.make_date(F.col("year").cast("int"), F.col("month_int"), F.col("day").cast("int")))
+    .withColumn("date_int",   F.col("event_date").cast("long")) # Epoch seconds for true sort
     .withColumn("district_key", F.upper(F.trim(F.col("district"))))
     .dropna(subset=["event_date", "district_key"])
 )
@@ -52,7 +54,8 @@ df_rain_processed = (
 # ── Standardize Mandi Prices (Signal B) ───────────────────────────────────────
 df_mandi_processed = (
     df_mandi_raw
-    .withColumn("event_date", F.to_date(F.col("date"))) # Renaming to common join key
+    .withColumn("event_date", F.to_date(F.col("date")))
+    .withColumn("date_int",   F.col("event_date").cast("long"))
     .withColumn("district_key", F.upper(F.trim(F.col("district"))))
     .dropna(subset=["event_date", "district_key"])
 )
@@ -60,7 +63,8 @@ df_mandi_processed = (
 # ── Standardize KCC Queries (Signal C) ────────────────────────────────────────
 df_kcc_processed = (
     df_kcc_raw
-    .withColumn("event_date", F.to_date(F.col("date"))) # Standardizing to event_date
+    .withColumn("event_date", F.to_date(F.col("date")))
+    .withColumn("date_int",   F.col("event_date").cast("long"))
     .withColumn("district_key", F.upper(F.trim(F.col("district"))))
     .dropna(subset=["event_date", "district_key"])
 )
@@ -72,8 +76,8 @@ df_kcc_processed = (
 
 # COMMAND ----------
 
-# Window: partition by district_key, order by event_date, look back 6 days + current day
-window_7d = Window.partitionBy("district_key").orderBy("event_date").rowsBetween(-6, 0)
+# Window: Fixed Spec using date_int to avoid alphabetical month sorting bugs
+window_7d = Window.partitionBy("state", "district").orderBy("date_int").rowsBetween(-6, 0)
 
 df_signal_a = (
     df_rain_processed
@@ -83,7 +87,7 @@ df_signal_a = (
         .when(F.col("rainfall_mm") < (F.col("rain_7d_avg") * 0.1), 0.8) # Severe Dry Spell
         .otherwise(0.0)
     )
-    .select("district_key", "event_date", "rainfall_mm", "rain_7d_avg", "rain_score")
+    .select("state", "district", "district_key", "event_date", "date_int", "rainfall_mm", "rain_7d_avg", "rain_score")
 )
 
 # COMMAND ----------
@@ -94,7 +98,7 @@ df_signal_a = (
 # COMMAND ----------
 
 # Window: partition by district_key and commodity
-window_30d = Window.partitionBy("district_key", "commodity").orderBy("event_date").rowsBetween(-29, 0)
+window_30d = Window.partitionBy("district_key", "commodity").orderBy("date_int").rowsBetween(-29, 0)
 
 df_mandi_base = (
     df_mandi_processed
@@ -134,11 +138,8 @@ df_signal_c = (
 
 # MAGIC %md
 # MAGIC ## 5. Fixed Join & Confidence Computation
-# MAGIC *Bugfix: Using [district_key, event_date] to ensure temporal alignment.*
 
 # COMMAND ----------
-
-print(f"DEBUG: Rainfall Base Count : {df_signal_a.count():,}")
 
 df_triangulated = (
     df_signal_a.alias("a")
@@ -154,13 +155,6 @@ df_triangulated = (
     )
     .withColumn("is_valid_trigger", F.when(F.col("confidence_score") >= 0.60, True).otherwise(False))
 )
-
-# ── Validation ───────────────────────────────────────────────────────────────
-count_after = df_triangulated.count()
-null_confidence = df_triangulated.filter(F.col("confidence_score").isNull()).count()
-
-print(f"DEBUG: Rows after join     : {count_after:,}")
-print(f"DEBUG: Null confidence     : {null_confidence}")
 
 # COMMAND ----------
 
@@ -181,6 +175,6 @@ df_confirmed = (
    .option("overwriteSchema", "true")
    .save(SILVER_SINK))
 
-print(f"✅  SILVER BUGFIX COMPLETE")
+print(f"✅  SILVER BUGFIX (v2.2) COMPLETE")
 print(f"📊  TOTAL VALID TRIGGERS : {df_confirmed.count():,}")
 display(df_confirmed.limit(20))

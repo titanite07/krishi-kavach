@@ -2,7 +2,8 @@
 # MAGIC %md
 # MAGIC # Krishi-Kavach | 03 — Gold Layer · Payout Simulation & Reporting
 # MAGIC **Purpose:** Join confirmed triggers with PMFBY insurance policies, simulate payouts, and render a high-fidelity risk dashboard.
-| Component | Logic | Goal |
+# MAGIC 
+# MAGIC | Component | Logic | Goal |
 |-----------|-------|------|
 | Payout Logic | Sum_Insured * Payout_Rate * Damage_Index | Financial quantification |
 | Risk Report | Spark SQL Aggregation | District-level auditing |
@@ -131,7 +132,6 @@ ax2.bar(pdf["district"], pdf["avg_kcc_score"],    label="Social Signal",  color=
 
 ax2.set_title("Average Signal Scores by District", fontsize=14, fontweight="bold")
 ax2.set_ylabel("Signal Strength (0 to 1)", fontsize=11)
-ax2.set_ylim(0, 2.5) # Allow space for stacked scores
 ax2.legend(loc="upper right", fontsize=10)
 plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
 
