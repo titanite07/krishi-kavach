@@ -1,98 +1,140 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Krishi-Kavach | 03 — Gold Layer · Payout Visualisation (Production)
-# MAGIC **Purpose:** Connect confirmed triggers to PMFBY insurance policy data, calculate final simulated payouts, and render visualizations.
-# MAGIC 
-# MAGIC | Process | Source | Logic |
-# MAGIC |---------|--------|-------|
-# MAGIC | Triggers | `silver/events_confirmed` | CONFIDENCE_SCORE >= 0.6 |
-# MAGIC | Policies | `bronze/pmfby_policy` | SUM_INSURED per State/Season |
-# MAGIC | Payout | Calculation | SUM_INSURED * CONFIDENCE_SCORE * DISRUPTION_FACTOR |
+# MAGIC # Krishi-Kavach | 03 — Gold Layer · Payout Simulation & Reporting
+# MAGIC **Purpose:** Join confirmed triggers with PMFBY insurance policies, simulate payouts, and render a high-fidelity risk dashboard.
+| Component | Logic | Goal |
+|-----------|-------|------|
+| Payout Logic | Sum_Insured * Payout_Rate * Damage_Index | Financial quantification |
+| Risk Report | Spark SQL Aggregation | District-level auditing |
+| Dashboard | Dual-panel Matplotlib | Stakeholder Visualization |
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, sum as spark_sum, count, avg, lit
+# ── Imports ──────────────────────────────────────────────────────────────────
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import pandas as pd
+from pyspark.sql.functions import col, lit, round as spark_round, avg, sum as spark_sum
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-SILVER_PATH = "dbfs:/FileStore/krishi_kavach/silver/events_confirmed"
-POLICY_PATH = "dbfs:/FileStore/krishi_kavach/bronze/pmfby_policy"
-GOLD_PATH   = "dbfs:/FileStore/krishi_kavach/gold/payout_simulation"
+SILVER_PATH = "dbfs:/FileStore/krishi_kavach/silver/confirmed_triggers"
+BRONZE_POLICY = "dbfs:/FileStore/krishi_kavach/bronze/pmfby_policy"
+GOLD_SINK   = "dbfs:/FileStore/krishi_kavach/gold/payout_simulation"
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Load Confirmed Events & Policies
+# MAGIC ## 1. Load Data & Payout Simulation
 
 # COMMAND ----------
 
+# ── Load Confirmed Triggers (Silver) ──────────────────────────────────────────
 df_triggers = spark.read.format("delta").load(SILVER_PATH)
-df_policy   = spark.read.format("delta").load(POLICY_PATH)
 
-# COMMAND ----------
+# ── Load PMFBY Policy Master (Bronze) ─────────────────────────────────────────
+df_policy = spark.read.format("delta").load(BRONZE_POLICY)
 
-# MAGIC %md
-# MAGIC ## 2. Map District-Level Triggers to State-Level Policies
-# MAGIC *Note: The real PMFBY data we have is at the State level. Let's aggregate triggers per state to match.*
-
-# COMMAND ----------
-
-df_state_triggers = (
+# ── Simulation Logic ──────────────────────────────────────────────────────────
+df_payout_sim = (
     df_triggers
-    .groupBy("state")
-    .agg(
-        avg("confidence_score").alias("avg_confidence"),
-        count("*").alias("trigger_count"),
-        avg("rainfall_mm").alias("avg_rainfall")
+    .withColumn("crop", lit("Mustard")) # Hardcoded crop for demo simulation
+    .join(df_policy, ["district", "crop"], "left")
+    .withColumn("area_ha",      lit(1.0)) # 1.0 hectare demo assumption
+    .withColumn("damage_index", col("confidence_score")) # Confidence as proxy for damage severity
+    .withColumn("payout_amount", 
+        col("area_ha") * col("sum_insured") * col("payout_rate") * col("damage_index")
     )
-)
-
-# Join with Policy
-df_payout = (
-    df_state_triggers.alias("t")
-    .join(df_policy.alias("p"), col("t.state") == col("p.state_name"), "inner")
-    .withColumn("payout_amount", col("p.sum_insured") * col("t.avg_confidence") * 0.1) # 10% base payout factor for trigger
+    # Refine selection for Gold layer
     .select(
-        col("p.state_name"), 
-        col("t.trigger_count"), 
-        col("p.sum_insured"), 
-        col("payout_amount"),
-        col("t.avg_confidence")
+        "district", "date", "crop", 
+        "rain_score", "price_score", "kcc_stress_score", "confidence_score",
+        "damage_index", "sum_insured", "payout_rate", "area_ha", "payout_amount"
     )
 )
 
-(df_payout.write.format("delta").mode("overwrite").save(GOLD_PATH))
+# ── Persist & Register SQL View ───────────────────────────────────────────────
+(df_payout_sim.write
+   .format("delta")
+   .mode("overwrite")
+   .option("overwriteSchema", "true")
+   .save(GOLD_SINK))
+
+df_payout_sim.createOrReplaceTempView("gold_payout")
+
+print(f"✅  GOLD LAYER: Saved {df_payout_sim.count():,} simulated payout records.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Render Insurance Risk Visualization
+# MAGIC ## 2. Risk Report (Spark SQL)
 
 # COMMAND ----------
 
-pdf = df_payout.toPandas()
+# MAGIC %sql
+# MAGIC -- District-level fiscal performance and signal attribution
+# MAGIC SELECT 
+# MAGIC   district,
+# MAGIC   COUNT(*) AS trigger_events,
+# MAGIC   ROUND(AVG(confidence_score), 3) AS avg_confidence,
+# MAGIC   ROUND(AVG(rain_score), 3) AS avg_rain_score,
+# MAGIC   ROUND(AVG(price_score), 3) AS avg_price_score,
+# MAGIC   ROUND(AVG(kcc_stress_score), 3) AS avg_kcc_score,
+# MAGIC   ROUND(SUM(payout_amount), 2) AS total_payout_INR
+# MAGIC FROM gold_payout
+# MAGIC GROUP BY district
+# MAGIC ORDER BY total_payout_INR DESC
 
-fig, ax1 = plt.subplots(figsize=(12, 6))
+# COMMAND ----------
 
-# Primary Bar Chart: Payout Amount
-color_payout = "#2E8B57"
-ax1.set_xlabel("State", fontsize=12)
-ax1.set_ylabel("Simulated Payout (₹)", fontsize=12, color=color_payout)
-bars = ax1.bar(pdf["state_name"], pdf["payout_amount"], color=color_payout, alpha=0.8, label="Simulated Payout")
-ax1.tick_params(axis='y', labelcolor=color_payout)
+# MAGIC %md
+# MAGIC ## 3. Risk Dashboard Visualization
 
-# Secondary Chart: Confidence
-ax2 = ax1.twinx()
-ax2.set_ylabel("Avg Confidence", fontsize=12, color="#B22222")
-ax2.plot(pdf["state_name"], pdf["avg_confidence"], color="#B22222", marker='o', linewidth=2, label="Signal Strength")
-ax2.tick_params(axis='y', labelcolor="#B22222")
-ax2.set_ylim(0, 1.0)
+# COMMAND ----------
 
-# Format Currency
-ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"₹{x/1e7:,.1f} Cr"))
+# ── Extract Aggregated Data ───────────────────────────────────────────────────
+# We use the same SQL logic to get a Pandas DF for Matplotlib
+df_report = spark.sql("""
+    SELECT 
+      district,
+      SUM(payout_amount) AS total_payout_INR,
+      AVG(rain_score) AS avg_rain_score,
+      AVG(price_score) AS avg_price_score,
+      AVG(kcc_stress_score) AS avg_kcc_score
+    FROM gold_payout
+    GROUP BY district
+    ORDER BY total_payout_INR DESC
+""")
 
-plt.title("Krishi-Kavach: Simulated PMFBY Payouts by State (2022 Data)", fontsize=14, fontweight="bold", pad=20)
-fig.tight_layout()
+pdf = df_report.toPandas()
+
+# ── Figure Layout ─────────────────────────────────────────────────────────────
+plt.rcParams['font.family'] = 'sans-serif'
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+
+# ── Panel 1: Total Payouts by District ─────────────────────────────────────────
+bars = ax1.barh(pdf["district"], pdf["total_payout_INR"], color="#2E8B57", alpha=0.9)
+ax1.set_title("Krishi-Kavach: Total Simulated Payouts by District", fontsize=14, fontweight="bold")
+ax1.set_xlabel("Total Payout (INR)", fontsize=11)
+ax1.invert_yaxis() # Highest payout at top
+
+# Add ₹ value labels
+for bar in bars:
+    width = bar.get_width()
+    ax1.text(width, bar.get_y() + bar.get_height()/2, f' ₹{width:,.0f}', 
+             va='center', fontsize=10, fontweight='bold')
+
+# ── Panel 2: Stacked Signal Attribution ───────────────────────────────────────
+# We stack average scores to show which signal is driving triggers in each district
+ax2.bar(pdf["district"], pdf["avg_rain_score"],   label="Weather Signal", color="#1E90FF") # DodgerBlue
+ax2.bar(pdf["district"], pdf["avg_price_score"],  label="Market Signal",  color="#FFA500", bottom=pdf["avg_rain_score"]) # Orange
+ax2.bar(pdf["district"], pdf["avg_kcc_score"],    label="Social Signal",  color="#FF4500", bottom=pdf["avg_rain_score"] + pdf["avg_price_score"]) # OrangeRed
+
+ax2.set_title("Average Signal Scores by District", fontsize=14, fontweight="bold")
+ax2.set_ylabel("Signal Strength (0 to 1)", fontsize=11)
+ax2.set_ylim(0, 2.5) # Allow space for stacked scores
+ax2.legend(loc="upper right", fontsize=10)
+plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
+
+# ── Final Rendering ───────────────────────────────────────────────────────────
+plt.tight_layout(pad=3.0)
 display(fig)
