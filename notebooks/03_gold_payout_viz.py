@@ -3,13 +3,22 @@
 # MAGIC # Krishi-Kavach | 03 — Gold Layer · Payout Simulation & Reporting
 # MAGIC **Purpose:** Join confirmed triggers with PMFBY insurance policies, simulate payouts, and render a high-fidelity risk dashboard.
 # MAGIC 
-# MAGIC | Component | Logic | Goal |
-|-----------|-------|------|
-| Payout Logic | Sum_Insured * Payout_Rate * Damage_Index | Financial quantification |
-| Risk Report | Spark SQL Aggregation | District-level auditing |
-| Dashboard | Dual-panel Matplotlib | Stakeholder Visualization |
+# MAGIC # MAGIC | Component | Logic | Goal |
+# MAGIC |-----------|-------|------|
+# MAGIC | Payout Logic | Sum_Insured * Payout_Rate * Damage_Index | Financial quantification |
+# MAGIC | Risk Report | Spark SQL Aggregation | District-level auditing |
+# MAGIC | Dashboard | Dual-panel Matplotlib | Stakeholder Visualization |
 
 # COMMAND ----------
+
+# ── Widgets ──────────────────────────────────────────────────────────────────
+dbutils.widgets.text("payout_multiplier", "0.1", "Payout Rate Multiplier (0.0–1.0)")
+dbutils.widgets.text("target_crop", "Mustard", "Target Crop for Payout Simulation")
+dbutils.widgets.text("area_ha", "1.0", "Area per Farmer Group (Hectares)")
+
+PAYOUT_MULT = float(dbutils.widgets.get("payout_multiplier"))
+TARGET_CROP = dbutils.widgets.get("target_crop")
+AREA_HA     = float(dbutils.widgets.get("area_ha"))
 
 # ── Imports ──────────────────────────────────────────────────────────────────
 import matplotlib.pyplot as plt
@@ -38,12 +47,12 @@ df_policy = spark.read.format("delta").load(BRONZE_POLICY)
 # ── Simulation Logic ──────────────────────────────────────────────────────────
 df_payout_sim = (
     df_triggers
-    .withColumn("crop", lit("Mustard")) # Hardcoded crop for demo simulation
+    .withColumn("crop", lit(TARGET_CROP)) 
     .join(df_policy, ["district", "crop"], "left")
-    .withColumn("area_ha",      lit(1.0)) # 1.0 hectare demo assumption
-    .withColumn("damage_index", col("confidence_score")) # Confidence as proxy for damage severity
+    .withColumn("area_ha",      lit(AREA_HA)) 
+    .withColumn("damage_index", col("confidence_score")) 
     .withColumn("payout_amount", 
-        col("area_ha") * col("sum_insured") * col("payout_rate") * col("damage_index")
+        col("area_ha") * col("sum_insured") * col("payout_rate") * col("damage_index") * PAYOUT_MULT
     )
     # Refine selection for Gold layer
     .select(

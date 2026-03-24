@@ -27,21 +27,40 @@ from pyspark.sql.types import (
 INPUT_BASE  = "dbfs:/FileStore/krishi_kavach/input"
 BRONZE_BASE = "dbfs:/FileStore/krishi_kavach/bronze"
 
+# ── District Normalization Utility ──────────────────────────────────────────
+# Mapping from 00_district_crt.py (redefined here for independence)
+DISTRICT_CRT = { 
+    "allahabad": "Prayagraj", "prayagraj": "Prayagraj", "bangalore": "Bengaluru", 
+    "bangalore urban": "Bengaluru", "bengaluru": "Bengaluru", "bombay": "Mumbai", 
+    "mumbai": "Mumbai", "madras": "Chennai", "calcutta": "Kolkata", "kolkata": "Kolkata", 
+    "orissa": "Odisha", "uttaranchal": "Uttarakhand", "gurgaon": "Gurugram", 
+    "mewat": "Nuh", "tanjore": "Thanjavur", "trichy": "Tiruchirappalli", "vizag": "Visakhapatnam"
+}
+
+def normalize_district_logic(raw):
+    if not raw: return None
+    clean = str(raw).strip().lower()
+    return DISTRICT_CRT.get(clean, clean.title())
+
+normalize_udf = F.udf(normalize_district_logic, StringType())
+
 # ── Utility: Delta Persistence ───────────────────────────────────────────────
 def save_to_bronze(df, table_name):
-    """Refined Delta write with schema and row summary"""
-    path = f"{BRONZE_BASE}/{table_name}"
-    (df.write
-       .format("delta")
-       .mode("overwrite")
-       .option("overwriteSchema", "true")
-       .save(path))
+    # Apply normalization to 'district' column right before saving
+    df = df.withColumn("district", normalize_udf(col("district")))
     
-    # Verification
-    df_delta = spark.read.format("delta").load(path)
+    path = f"{BRONZE_BASE}/{table_name}"
+    (df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(path))
+    
+    # Post-normalization check: Display any district NOT in CRT for manual review
     print(f"\n✅ TABLE: {table_name}")
+    df_delta = spark.read.format("delta").load(path)
+    df_unknown = df_delta.filter(~lower(col("district")).isin(list(DISTRICT_CRT.keys()))).select("district").distinct()
+    if df_unknown.count() > 0:
+        print(f"⚠️  UNMAPPED DISTRICTS (Check CRT):")
+        display(df_unknown.limit(5))
+    
     print(f"📊 ROW COUNT: {df_delta.count():,}")
-    df_delta.printSchema()
     display(df_delta.limit(3))
 
 # COMMAND ----------

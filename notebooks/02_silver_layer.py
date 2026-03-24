@@ -6,13 +6,24 @@
 # MAGIC ### 🐛 Bugfix Note (v2.2): 
 # MAGIC Fixed alphabetical month sorting bug. Switched to `date_int` (epoch) for the 7-day rolling window to guarantee chronological integrity.
 # MAGIC 
-# MAGIC | Signal | Component | Source Table | Weight |
-|--------|-----------|--------------|--------|
-| Signal A | Weather Anomaly | `imd_rainfall` | 50% |
-| Signal B | Market Stress | `mandi_prices` | 25% |
-| Signal C | Social Distress | `kcc_2022` | 25% |
+# MAGIC # MAGIC | Signal | Component | Source Table | Weight |
+# MAGIC |--------|-----------|--------------|--------|
+# MAGIC | Signal A | Weather Anomaly | `imd_rainfall` | 50% |
+# MAGIC | Signal B | Market Stress | `mandi_prices` | 25% |
+# MAGIC | Signal C | Social Distress | `kcc_2022` | 25% |
 
 # COMMAND ----------
+
+# ── Widgets ──────────────────────────────────────────────────────────────────
+dbutils.widgets.text("confidence_threshold", "0.6", "Min Confidence Score (0.0–1.0)")
+dbutils.widgets.text("rain_spike_multiplier", "2.0", "Rain Spike Multiplier (e.g. 2.0 = 2x avg)")
+dbutils.widgets.text("rain_drought_multiplier", "0.1", "Dry Spell Threshold (e.g. 0.1 = 10% of avg)")
+dbutils.widgets.text("price_spike_multiplier", "1.3", "Price Spike Multiplier (e.g. 1.3 = 30% above avg)")
+
+CONFIDENCE_THRESHOLD   = float(dbutils.widgets.get("confidence_threshold"))
+RAIN_SPIKE_MULT        = float(dbutils.widgets.get("rain_spike_multiplier"))
+RAIN_DROUGHT_MULT      = float(dbutils.widgets.get("rain_drought_multiplier"))
+PRICE_SPIKE_MULT       = float(dbutils.widgets.get("price_spike_multiplier"))
 
 # ── Imports ──────────────────────────────────────────────────────────────────
 from pyspark.sql import functions as F
@@ -76,6 +87,7 @@ df_kcc_processed = (
 
 # COMMAND ----------
 
+# ── Signal A: Weather Score (50%) ──────────────────────────────────────────
 # Window: Fixed Spec using date_int to avoid alphabetical month sorting bugs
 window_7d = Window.partitionBy("state", "district").orderBy("date_int").rowsBetween(-6, 0)
 
@@ -83,8 +95,8 @@ df_signal_a = (
     df_rain_processed
     .withColumn("rain_7d_avg", F.avg("rainfall_mm").over(window_7d))
     .withColumn("rain_score", 
-        F.when(F.col("rainfall_mm") > (F.col("rain_7d_avg") * 2.0), 1.0) # Extreme Spike
-        .when(F.col("rainfall_mm") < (F.col("rain_7d_avg") * 0.1), 0.8) # Severe Dry Spell
+        F.when(F.col("rainfall_mm") > (F.col("rain_7d_avg") * RAIN_SPIKE_MULT), 1.0) # Extreme Spike
+        .when(F.col("rainfall_mm") < (F.col("rain_7d_avg") * RAIN_DROUGHT_MULT), 0.8) # Severe Dry Spell
         .otherwise(0.0)
     )
     .select("state", "district", "district_key", "event_date", "date_int", "rainfall_mm", "rain_7d_avg", "rain_score")
@@ -97,6 +109,7 @@ df_signal_a = (
 
 # COMMAND ----------
 
+# ── Signal B: Market Stress Score (25%) ───────────────────────────────────────
 # Window: partition by district_key and commodity
 window_30d = Window.partitionBy("district_key", "commodity").orderBy("date_int").rowsBetween(-29, 0)
 
@@ -104,7 +117,7 @@ df_mandi_base = (
     df_mandi_processed
     .withColumn("price_30d_avg",   F.avg("modal_price").over(window_30d))
     .withColumn("arrival_30d_avg", F.avg("arrivals_tonnes").over(window_30d))
-    .withColumn("price_spike_flag", F.when(F.col("modal_price")     > (F.col("price_30d_avg")   * 1.3), 1.0).otherwise(0.0))
+    .withColumn("price_spike_flag", F.when(F.col("modal_price") > (F.col("price_30d_avg") * PRICE_SPIKE_MULT), 1.0).otherwise(0.0))
     .withColumn("arrival_dip_flag", F.when(F.col("arrivals_tonnes") < (F.col("arrival_30d_avg") * 0.5), 1.0).otherwise(0.0))
     .withColumn("raw_price_score", (F.col("price_spike_flag") * 0.5) + (F.col("arrival_dip_flag") * 0.5))
 )
