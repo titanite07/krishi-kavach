@@ -1,172 +1,229 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Krishi-Kavach | 01 — Bronze Layer Ingestion (Production)
-# MAGIC **Purpose:** Ingest real-world agricultural and weather datasets into the Bronze Delta layer.
-# MAGIC
-# MAGIC # MAGIC | Dataset | Source File | Delta Table |
-# MAGIC |---------|-------------|-------------|
-# MAGIC | IMD Grids | `imd_rainfall_2022.csv` | `imd_grids` |
-# MAGIC | PMFBY Policies | `state-level-pmfby.csv` | `pmfby_policy` |
-# MAGIC | Daily Rainfall | `daily_rainfall_melted.csv` | `daily_rainfall` |
-# MAGIC | Mandi Prices | `mandi_prices_cleaned.csv` | `mandi_prices` |
-# MAGIC | KCC Queries | `kcc_2022_filtered.csv` | `kcc_queries` |
-# MAGIC | Agriculture Prices | `Agriculture_price_dataset.csv` | `agri_prices` |
+# MAGIC **Purpose:** Ingest 6 real-world agricultural and weather datasets from DBFS into Delta format.
+# MAGIC 
+# MAGIC | Dataset | Source Path | Delta Sink | Status |
+# MAGIC |---------|-------------|------------|--------|
+# MAGIC | IMD Rainfall | `.../input/imd_rainfall_2022.csv` | `.../bronze/imd_rainfall` | Production |
+# MAGIC | Mandi Prices | `.../input/mandi_prices.csv` | `.../bronze/mandi_prices` | Production |
+# MAGIC | Daily Rainfall | `.../input/district_daily_rainfall.csv` | `.../bronze/district_daily_rainfall` | Production |
+# MAGIC | KCC Queries | `.../input/kcc_2022.csv` | `.../bronze/kcc_2022` | Production |
+# MAGIC | PMFBY Policies | `.../input/pmfby_policy.csv` | `.../bronze/pmfby_policy` | Production |
+# MAGIC | AGMARKNET | `.../input/agmarknet_reference.csv` | `.../bronze/agmarknet_reference` | Production |
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, to_date, to_timestamp, lit, concat_ws
+# ── Imports ──────────────────────────────────────────────────────────────────
+from pyspark.sql.functions import (
+    col, to_date, lit, expr, concat_ws, lpad, 
+    filter as spark_filter, upper, initcap, regexp_extract
+)
 from pyspark.sql.types import (
-    StructType, StructField,
-    StringType, DoubleType, IntegerType, DateType
+    StructType, StructField, StringType, DoubleType, DateType, IntegerType
 )
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 INPUT_BASE  = "dbfs:/FileStore/krishi_kavach/input"
 BRONZE_BASE = "dbfs:/FileStore/krishi_kavach/bronze"
 
-def write_to_bronze(df, table_name):
+# ── Utility: Delta Persistence ───────────────────────────────────────────────
+def save_to_bronze(df, table_name):
+    """Refined Delta write with schema and row summary"""
+    path = f"{BRONZE_BASE}/{table_name}"
     (df.write
        .format("delta")
        .mode("overwrite")
        .option("overwriteSchema", "true")
-       .save(f"{BRONZE_BASE}/{table_name}"))
-    print(f"✅ Bronze | {table_name:<15} -> {df.count():,} rows written")
+       .save(path))
+    
+    # Verification
+    df_delta = spark.read.format("delta").load(path)
+    print(f"\n✅ TABLE: {table_name}")
+    print(f"📊 ROW COUNT: {df_delta.count():,}")
+    df_delta.printSchema()
+    display(df_delta.limit(3))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. IMD Gridded Rainfall (Processed NetCDF)
+# MAGIC ## 1. IMD Rainfall Ingestion
+# MAGIC *Logic: Basic schema casting and null removal.*
 
 # COMMAND ----------
 
 imd_schema = StructType([
-    StructField("timestamp",                  StringType(), True),
-    StructField("district",                   StringType(), True),
-    StructField("grid_lat",                   DoubleType(), True),
-    StructField("grid_lon",                   DoubleType(), True),
-    StructField("seasonal_rain_mm",           DoubleType(), True),
-    StructField("seasonal_rain_threshold_90", DoubleType(), True),
-    StructField("actual_rain_mm",             DoubleType(), True),
-])
-
-df_imd = (spark.read.option("header", "true").schema(imd_schema).csv(f"{INPUT_BASE}/imd_rainfall_2022.csv")
-          .withColumn("timestamp", to_timestamp(col("timestamp"))))
-
-write_to_bronze(df_imd, "imd_grids")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 2. PMFBY State-Level Policies
-
-# COMMAND ----------
-
-pmfby_schema = StructType([
-    StructField("id",              IntegerType(), True),
-    StructField("year",            IntegerType(), True),
-    StructField("season",          StringType(),  True),
-    StructField("scheme",          StringType(),  True),
-    StructField("state_id",        IntegerType(), True),
-    StructField("state_name",      StringType(),  True),
-    StructField("farmer_count",    IntegerType(), True),
-    StructField("land_area",       DoubleType(),  True),
-    StructField("sum_insured",     DoubleType(),  True),
-    StructField("gross_premium",   DoubleType(),  True),
-    StructField("farmer_premium",  DoubleType(),  True),
-    StructField("central_subsidy", DoubleType(),  True),
-    StructField("state_subsidy",   DoubleType(),  True),
-])
-
-df_pmfby = spark.read.option("header", "true").schema(pmfby_schema).csv(f"{INPUT_BASE}/state-level-pmfby.csv")
-write_to_bronze(df_pmfby, "pmfby_policy")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3. Daily District-wise Rainfall (Melted)
-
-# COMMAND ----------
-
-daily_rain_schema = StructType([
-    StructField("state",       StringType(), True),
     StructField("district",    StringType(), True),
-    StructField("month",       StringType(), True),
-    StructField("day",         IntegerType(), True),
-    StructField("rainfall_mm", DoubleType(),  True),
+    StructField("date",        StringType(), True),
+    StructField("rainfall_mm", DoubleType(), True),
 ])
 
-# Note: We will construct a real date in the Silver layer
-df_daily_rain = spark.read.option("header", "true").schema(daily_rain_schema).csv(f"{INPUT_BASE}/daily_rainfall_melted.csv")
-write_to_bronze(df_daily_rain, "daily_rainfall")
+df_imd = (
+    spark.read.option("header", "true")
+    .schema(imd_schema)
+    .csv(f"{INPUT_BASE}/imd_rainfall_2022.csv")
+    .withColumn("date", to_date(col("date")))
+    .dropna(subset=["district", "rainfall_mm"])
+)
+
+save_to_bronze(df_imd, "imd_rainfall")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Mandi Market Prices (Cleaned)
+# MAGIC ## 2. Mandi Market Prices Ingestion
+# MAGIC *Logic: XML artifact cleanup (non-numeric filter) and ISO date normalization.*
 
 # COMMAND ----------
 
 mandi_schema = StructType([
-    StructField("State",        StringType(), True),
-    StructField("District",     StringType(), True),
-    StructField("Market",       StringType(), True),
-    StructField("Commodity",    StringType(), True),
-    StructField("Variety",      StringType(), True),
-    StructField("Grade",        StringType(), True),
-    StructField("Arrival_Date", StringType(), True),
-    StructField("Min_Price",    DoubleType(), True),
-    StructField("Max_Price",    DoubleType(), True),
-    StructField("Modal_Price",  DoubleType(), True),
+    StructField("district",        StringType(), True),
+    StructField("date",            StringType(), True),
+    StructField("commodity",       StringType(), True),
+    StructField("modal_price",     StringType(), True), # to filter XML strings
+    StructField("arrivals_tonnes", DoubleType(), True),
 ])
 
-df_mandi = (spark.read.option("header", "true").schema(mandi_schema).csv(f"{INPUT_BASE}/mandi_prices_cleaned.csv")
-            .withColumn("Arrival_Date", to_date(col("Arrival_Date"))))
+df_mandi = (
+    spark.read.option("header", "true")
+    .schema(mandi_schema)
+    .csv(f"{INPUT_BASE}/mandi_prices.csv")
+    # Filter rows where modal_price is NOT numeric (remove XML artifacts like 'x0020')
+    .filter(col("modal_price").cast("double").isNotNull())
+    .withColumn("modal_price", col("modal_price").cast(DoubleType()))
+    .withColumn("date", to_date(col("date"), "yyyy-MM-dd"))
+    .dropna(subset=["district", "date", "modal_price"])
+)
 
-write_to_bronze(df_mandi, "mandi_prices")
+save_to_bronze(df_mandi, "mandi_prices")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. KCC Query Logs (Filtered 2022)
+# MAGIC ## 3. District-wise Daily Rainfall (Wide-to-Long)
+# MAGIC *Logic: Melting 31 daily columns into a single date-driven series.*
+
+# COMMAND ----------
+
+# We read raw then melt
+df_wide_rain = spark.read.option("header", "true").csv(f"{INPUT_BASE}/district_daily_rainfall.csv")
+
+# Identify day columns (D1, D2 ... D31)
+day_cols = [f"D{i}" for i in range(1, 32)]
+
+# Melt logic using stack expression
+stack_expr = f"stack({len(day_cols)}, " + ", ".join([f"'{c}', {c}" for c in day_cols]) + ") as (day_raw, rainfall_mm)"
+
+df_long_rain = (
+    df_wide_rain
+    .select("district", "year", "month", expr(stack_expr))
+    # Extract numeric day: "D1" -> 1
+    .withColumn("day_num", regexp_extract(col("day_raw"), r"(\d+)", 1))
+    # Construct date: YYYY-MM-DD
+    .withColumn("date_str", concat_ws("-", col("year"), lpad(col("month"), 2, "0"), lpad(col("day_num"), 2, "0")))
+    .withColumn("date",      to_date(col("date_str")))
+    .withColumn("rainfall_mm", col("rainfall_mm").cast(DoubleType()))
+    .dropna(subset=["rainfall_mm", "date"])
+    .select("district", "date", "rainfall_mm")
+)
+
+save_to_bronze(df_long_rain, "district_daily_rainfall")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Kisan Call Center (KCC) Stress Inquiries
+# MAGIC *Logic: Filtering for stress-related categories only.*
 
 # COMMAND ----------
 
 kcc_schema = StructType([
-    StructField("Year",         IntegerType(), True),
-    StructField("Month",        IntegerType(), True),
-    StructField("Day",          IntegerType(), True),
-    StructField("Crop",         StringType(),  True),
-    StructField("DistrictName", StringType(),  True),
-    StructField("QueryType",    StringType(),  True),
-    StructField("Season",       StringType(),  True),
-    StructField("Sector",       StringType(),  True),
-    StructField("StateName",    StringType(),  True),
+    StructField("district",   StringType(), True),
+    StructField("date",       StringType(), True),
+    StructField("category",   StringType(), True),
+    StructField("query_text", StringType(), True),
 ])
 
-df_kcc = spark.read.option("header", "true").schema(kcc_schema).csv(f"{INPUT_BASE}/kcc_2022_filtered.csv")
-write_to_bronze(df_kcc, "kcc_queries")
+stress_categories = ['Weather', 'Pest', 'Disease', 'Flood', 'Drought']
+
+df_kcc = (
+    spark.read.option("header", "true")
+    .schema(kcc_schema)
+    .csv(f"{INPUT_BASE}/kcc_2022.csv")
+    .filter(col("category").isin(stress_categories))
+    .withColumn("date", to_date(col("date")))
+    .dropna(subset=["district"])
+)
+
+save_to_bronze(df_kcc, "kcc_2022")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Historical Agri Prices
+# MAGIC ## 5. PMFBY Insurance Policy Master
+# MAGIC *Logic: Policy validation and zero-sum filtering.*
 
 # COMMAND ----------
 
-agri_price_schema = StructType([
-    StructField("STATE",         StringType(), True),
-    StructField("District Name", StringType(), True),
-    StructField("Market Name",   StringType(), True),
-    StructField("Commodity",     StringType(), True),
-    StructField("Variety",       StringType(), True),
-    StructField("Grade",         StringType(), True),
-    StructField("Min_Price",     DoubleType(), True),
-    StructField("Max_Price",     DoubleType(), True),
-    StructField("Modal_Price",   DoubleType(), True),
-    StructField("Price Date",    StringType(), True),
+pmfby_schema = StructType([
+    StructField("district",    StringType(), True),
+    StructField("crop",        StringType(), True),
+    StructField("sum_insured", DoubleType(), True),
+    StructField("payout_rate", DoubleType(), True),
+    StructField("season",      StringType(), True),
 ])
 
-df_agri_prices = (spark.read.option("header", "true").schema(agri_price_schema).csv(f"{INPUT_BASE}/Agriculture_price_dataset.csv")
-                  .withColumn("Price Date", to_date(col("Price Date"), "d/M/yyyy")))
+df_pmfby = (
+    spark.read.option("header", "true")
+    .schema(pmfby_schema)
+    .csv(f"{INPUT_BASE}/pmfby_policy.csv")
+    # Validation: Sum Insured must be > 0
+    .filter((col("sum_insured").isNotNull()) & (col("sum_insured") > 0))
+    .dropna(subset=["district", "crop"])
+)
 
-write_to_bronze(df_agri_prices, "agri_prices")
+save_to_bronze(df_pmfby, "pmfby_policy")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 6. AGMARKNET Market Reference Data
+# MAGIC *Logic: Title Case standardization for district names.*
+
+# COMMAND ----------
+
+agmarknet_schema = StructType([
+    StructField("district",    StringType(), True),
+    StructField("mandi_name",  StringType(), True),
+    StructField("crop",        StringType(), True),
+    StructField("year",        IntegerType(), True),
+    StructField("min_price",   DoubleType(), True),
+    StructField("max_price",   DoubleType(), True),
+    StructField("modal_price", DoubleType(), True),
+])
+
+df_agmarknet = (
+    spark.read.option("header", "true")
+    .schema(agmarknet_schema)
+    .csv(f"{INPUT_BASE}/agmarknet_reference.csv")
+    # Standardize District: "AHMEDNAGAR" -> "Ahmednagar"
+    .withColumn("district", initcap(col("district")))
+    .dropna(subset=["district", "modal_price"])
+)
+
+save_to_bronze(df_agmarknet, "agmarknet_reference")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # 🏁 Summary Table
+# MAGIC ***
+
+# COMMAND ----------
+
+print("=" * 60)
+print("  Krishi-Kavach · Bronze Layer Ingestion Complete")
+print("=" * 60)
+print(f"  Total Tables Optimized: 6")
+print("  Location: dbfs:/FileStore/krishi_kavach/bronze/")
+print("=" * 60)

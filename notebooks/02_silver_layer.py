@@ -28,12 +28,17 @@ CONFIDENCE_THRESHOLD = 0.6
 
 # COMMAND ----------
 
-df_rain = spark.read.format("delta").load(f"{BRONZE_BASE}/daily_rainfall")
-df_mandi = spark.read.format("delta").load(f"{BRONZE_BASE}/mandi_prices")
-df_kcc = spark.read.format("delta").load(f"{BRONZE_BASE}/kcc_queries")
-df_policy = spark.read.format("delta").load(f"{BRONZE_BASE}/pmfby_policy")
-
 # COMMAND ----------
+
+df_rain = spark.read.format("delta").load(f"{BRONZE_BASE}/district_daily_rainfall")
+df_mandi = spark.read.format("delta").load(f"{BRONZE_BASE}/mandi_prices")
+df_kcc = spark.read.format("delta").load(f"{BRONZE_BASE}/kcc_2022")
+df_policy = spark.read.format("delta").load(f"{BRONZE_BASE}/pmfby_policy")
+df_agmarknet = spark.read.format("delta").load(f"{BRONZE_BASE}/agmarknet_reference")
+
+print(f"📥  Rainfall (bronze) : {df_rain.count():,} rows")
+print(f"📥  Mandi    (bronze) : {df_mandi.count():,} rows")
+print(f"📥  KCC      (bronze) : {df_kcc.count():,} rows")
 
 # MAGIC %md
 # MAGIC ## 2. Process Rainfall Anomalies (Dry Spells)
