@@ -1,23 +1,31 @@
-
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Krishi-Kavach | Silver Layer · Fraud Guard & Integrity Check
-# MAGIC **Purpose:** Validate confirmed triggers against pre-defined fraud rules to prevent social-media manipulation or system gaming.
+# MAGIC # Krishi-Kavach | Silver Layer · Fraud Guard [UC Version]
+# MAGIC **Purpose:** Validate confirmed triggers against pre-defined fraud rules using UC Managed Tables.
+# MAGIC 
 # MAGIC | Factor | Rule | Logic |
-# MAGIC |--------|------|-------|
-# MAGIC | Bulk Activity | Rule 1 | > 5 inquiries from same device per district/day |
-# MAGIC | Zero-Weather | Rule 2 | High social stress without supporting rainfall/price |
-# MAGIC | High Confidence | Rule 3 | Conf > 0.7 without any weather signal support |
+|--------|------|-------|
+| Bulk Activity | Rule 1 | > 5 inquiries from same device per district/day |
+| Zero-Weather | Rule 2 | High social stress without supporting rainfall/price |
+| High Confidence | Rule 3 | Conf > 0.7 without any weather signal support |
 
 # COMMAND ----------
 
+# ── UC Widgets ──────────────────────────────────────────────────────────────
+dbutils.widgets.text("catalog", "main", "Catalog Name")
+dbutils.widgets.text("schema", "krishi_kavach", "Schema Name")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA  = dbutils.widgets.get("schema")
+FULL_SCHEMA_PATH = f"{CATALOG}.{SCHEMA}"
+
 # ── Imports ──────────────────────────────────────────────────────────────────
-from pyspark.sql.functions import col, when, count, lit, concat_ws
+from pyspark.sql.functions import col, when, count, lit
 from pyspark.sql.window import Window
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-SILVER_PATH  = "dbfs:/FileStore/krishi_kavach/silver/confirmed_triggers"
-FRAUD_PATH   = "dbfs:/FileStore/krishi_kavach/silver/fraud_flagged"
+TABLE_SILVER = f"{FULL_SCHEMA_PATH}.silver_confirmed_triggers"
+TABLE_FRAUD  = f"{FULL_SCHEMA_PATH}.silver_fraud_flagged"
 
 # COMMAND ----------
 
@@ -26,30 +34,26 @@ FRAUD_PATH   = "dbfs:/FileStore/krishi_kavach/silver/fraud_flagged"
 
 # COMMAND ----------
 
-df_triggers = spark.read.format("delta").load(SILVER_PATH)
+df_triggers = spark.table(TABLE_SILVER)
 
 # MAGIC %md
 # MAGIC ## 2. Implement Fraud Detection Logic
 
 # COMMAND ----------
 
-# ── Rule 1: Single-device Bulk Submission ───────────────────────────
-# Note: Assuming device_id is available from the original IVR signal or KCC metadata
-# If device_id is missing (demo), we skip or use a mock column.
 if "device_id" not in df_triggers.columns:
     df_triggers = df_triggers.withColumn("device_id", lit("mock_device_001"))
 
-window_device = Window.partitionBy("district", "date", "device_id")
+window_device = Window.partitionBy("district", "event_date", "device_id")
 
 df_fraud_base = (
     df_triggers
     .withColumn("device_query_count", count("*").over(window_device))
-    # Combine Rules into a single flag logic
     .withColumn(
         "fraud_flag",
-        when(col("device_query_count") > 5, True) # Rule 1
-        .when((col("rain_score") == 0.0) & (col("kcc_stress_score") >= 0.6) & (col("price_score") == 0.0), True) # Rule 2
-        .when((col("confidence_score") >= 0.7) & (col("rain_score") == 0.0), True) # Rule 3
+        when(col("device_query_count") > 5, True) 
+        .when((col("rain_score") == 0.0) & (col("kcc_stress_score") >= 0.6) & (col("price_score") == 0.0), True) 
+        .when((col("confidence_score") >= 0.7) & (col("rain_score") == 0.0), True) 
         .otherwise(False)
     )
     .withColumn(
@@ -64,27 +68,24 @@ df_fraud_base = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Split & Persist
+# MAGIC ## 3. Split & Persist to UC Tables
 
 # COMMAND ----------
 
-# Split datasets
 df_clean   = df_fraud_base.filter(col("fraud_flag") == False).drop("fraud_reason", "device_query_count")
 df_flagged = df_fraud_base.filter(col("fraud_flag") == True)
 
-# Overwrite clean triggers (Integrity Filter)
 (df_clean.write
    .format("delta")
    .mode("overwrite")
    .option("overwriteSchema", "true")
-   .save(SILVER_PATH))
+   .saveAsTable(TABLE_SILVER))
 
-# Save flagged records for manual audit
 (df_flagged.write
    .format("delta")
    .mode("overwrite")
    .option("overwriteSchema", "true")
-   .save(FRAUD_PATH))
+   .saveAsTable(TABLE_FRAUD))
 
 # COMMAND ----------
 
@@ -102,5 +103,4 @@ print(f"✅ Clean triggers : {clean_count:,}")
 print(f"🚨 Fraud-flagged  : {fraud_count:,}")
 print(f"📊 Fraud rate     : {fraud_rate:.2f}%")
 
-print("\n🔍 FLAGS FOR AUDIT:")
-display(df_flagged.select("district", "date", "confidence_score", "fraud_reason"))
+display(df_flagged.select("district", "event_date", "confidence_score", "fraud_reason"))

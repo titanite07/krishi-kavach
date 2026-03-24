@@ -1,68 +1,66 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Krishi-Kavach | 02 — Silver Layer · Triangulation Engine (Production)
-# MAGIC **Purpose:** Process Bronze tables and triangulate 3 signals (Weather, Market, Social) to compute a high-confidence parametric insurance trigger.
+# MAGIC # Krishi-Kavach | 02 — Silver Layer · Triangulation Engine [UC Version]
+# MAGIC **Purpose:** Process Bronze UC tables and triangulate 3 signals to compute a high-confidence parametric trigger.
 # MAGIC 
-# MAGIC ### 🐛 Bugfix Note (v2.2): 
-# MAGIC Fixed alphabetical month sorting bug. Switched to `date_int` (epoch) for the 7-day rolling window to guarantee chronological integrity.
+# MAGIC ### 🐛 Update (v3.0): 
+# MAGIC Migrated to **Unity Catalog** and implemented **Z-Score Anomaly Detection** for higher statistical precision.
 # MAGIC 
-# MAGIC # MAGIC | Signal | Component | Source Table | Weight |
-# MAGIC |--------|-----------|--------------|--------|
-# MAGIC | Signal A | Weather Anomaly | `imd_rainfall` | 50% |
-# MAGIC | Signal B | Market Stress | `mandi_prices` | 25% |
-# MAGIC | Signal C | Social Distress | `kcc_2022` | 25% |
+| Signal | Component | Source UC Table | Weight |
+|--------|-----------|-----------------|--------|
+| Signal A | Weather Anomaly | `bronze_imd_rainfall` | 50% |
+| Signal B | Market Stress | `bronze_mandi_prices` | 25% |
+| Signal C | Social Distress | `bronze_kcc_2022` | 25% |
 
 # COMMAND ----------
 
-# ── Widgets ──────────────────────────────────────────────────────────────────
-dbutils.widgets.text("confidence_threshold", "0.6", "Min Confidence Score (0.0–1.0)")
-dbutils.widgets.text("rain_spike_multiplier", "2.0", "Rain Spike Multiplier (e.g. 2.0 = 2x avg)")
-dbutils.widgets.text("rain_drought_multiplier", "0.1", "Dry Spell Threshold (e.g. 0.1 = 10% of avg)")
-dbutils.widgets.text("price_spike_multiplier", "1.3", "Price Spike Multiplier (e.g. 1.3 = 30% above avg)")
+# ── UC & Statistical Parameter Widgets ───────────────────────────────────────
+dbutils.widgets.text("catalog", "main", "Catalog Name")
+dbutils.widgets.text("schema", "krishi_kavach", "Schema Name")
 
-CONFIDENCE_THRESHOLD   = float(dbutils.widgets.get("confidence_threshold"))
-RAIN_SPIKE_MULT        = float(dbutils.widgets.get("rain_spike_multiplier"))
-RAIN_DROUGHT_MULT      = float(dbutils.widgets.get("rain_drought_multiplier"))
-PRICE_SPIKE_MULT       = float(dbutils.widgets.get("price_spike_multiplier"))
+dbutils.widgets.text("confidence_threshold", "0.6", "Min Confidence Score (0.0–1.0)")
+dbutils.widgets.text("rain_spike_z", "1.5", "Rain Spike Z-Score (e.g. 1.5 sigma)")
+dbutils.widgets.text("rain_drought_z", "1.0", "Dry Spell Z-Score (e.g. 1.0 sigma)")
+dbutils.widgets.text("price_spike_z", "1.5", "Price Spike Z-Score (e.g. 1.5 sigma)")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA  = dbutils.widgets.get("schema")
+FULL_SCHEMA_PATH = f"{CATALOG}.{SCHEMA}"
+
+CONF_THRESH  = float(dbutils.widgets.get("confidence_threshold"))
+RAIN_SPIKE_Z = float(dbutils.widgets.get("rain_spike_z"))
+RAIN_DRY_Z   = float(dbutils.widgets.get("rain_drought_z"))
+PRICE_SPIKE_Z = float(dbutils.widgets.get("price_spike_z"))
 
 # ── Imports ──────────────────────────────────────────────────────────────────
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-BRONZE_BASE = "dbfs:/FileStore/krishi_kavach/bronze"
-SILVER_SINK = "dbfs:/FileStore/krishi_kavach/silver/confirmed_triggers"
-
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Load & Pre-process Datasets (Harmonize District & Date)
+# MAGIC ## 1. Load & Pre-process Bronze UC Tables
 
 # COMMAND ----------
 
-# ── Load Bronze Tables ────────────────────────────────────────────────────────
-df_rain_raw  = spark.read.format("delta").load(f"{BRONZE_BASE}/district_daily_rainfall")
-df_mandi_raw = spark.read.format("delta").load(f"{BRONZE_BASE}/mandi_prices")
-df_kcc_raw   = spark.read.format("delta").load(f"{BRONZE_BASE}/kcc_2022")
+df_rain_raw  = spark.table(f"{FULL_SCHEMA_PATH}.bronze_district_daily_rainfall")
+df_mandi_raw = spark.table(f"{FULL_SCHEMA_PATH}.bronze_mandi_prices")
+df_kcc_raw   = spark.table(f"{FULL_SCHEMA_PATH}.bronze_kcc_2022")
 
-# ── Month Abbreviation Mapping ───────────────────────────────────────────────
 month_map = F.create_map([F.lit(x) for x in [
     "Jan", "1", "Feb", "2", "Mar", "3", "Apr", "4", "May", "5", "Jun", "6",
     "Jul", "7", "Aug", "8", "Sep", "9", "Oct", "10", "Nov", "11", "Dec", "12"
 ]])
 
-# ── Standardize Rainfall (Signal A) ──────────────────────────────────────────
-# Bugfix: Construct full event_date and date_int (epoch) for chronological sorting
 df_rain_processed = (
     df_rain_raw
     .withColumn("month_int", month_map[F.col("month")].cast("int"))
     .withColumn("event_date", F.make_date(F.col("year").cast("int"), F.col("month_int"), F.col("day").cast("int")))
-    .withColumn("date_int",   F.col("event_date").cast("long")) # Epoch seconds for true sort
+    .withColumn("date_int",   F.col("event_date").cast("long")) 
     .withColumn("district_key", F.upper(F.trim(F.col("district"))))
     .dropna(subset=["event_date", "district_key"])
 )
 
-# ── Standardize Mandi Prices (Signal B) ───────────────────────────────────────
 df_mandi_processed = (
     df_mandi_raw
     .withColumn("event_date", F.to_date(F.col("date")))
@@ -71,7 +69,6 @@ df_mandi_processed = (
     .dropna(subset=["event_date", "district_key"])
 )
 
-# ── Standardize KCC Queries (Signal C) ────────────────────────────────────────
 df_kcc_processed = (
     df_kcc_raw
     .withColumn("event_date", F.to_date(F.col("date")))
@@ -83,12 +80,10 @@ df_kcc_processed = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Signal A: Weather Score (50%)
+# MAGIC ## 2. Signal A: Weather Score (50%) - Z-Score Anomaly
 
 # COMMAND ----------
 
-# ── Signal A: Weather Score (50%) ──────────────────────────────────────────
-# Window: Fixed Spec using date_int to avoid alphabetical month sorting bugs
 window_7d = Window.partitionBy("state", "district").orderBy("date_int").rowsBetween(-6, 0)
 
 df_signal_a = (
@@ -98,10 +93,10 @@ df_signal_a = (
     .withColumn("rain_score", 
         F.when(
             (F.col("rain_7d_stddev").isNotNull()) & (F.col("rain_7d_stddev") > 0) & 
-            (F.col("rainfall_mm") > (F.col("rain_7d_avg") + 1.5 * F.col("rain_7d_stddev"))), 1.0) # Extreme Spike
+            (F.col("rainfall_mm") > (F.col("rain_7d_avg") + RAIN_SPIKE_Z * F.col("rain_7d_stddev"))), 1.0) # Extreme Spike
         .when(
             (F.col("rain_7d_stddev").isNotNull()) & (F.col("rain_7d_stddev") > 0) & 
-            (F.col("rainfall_mm") < (F.col("rain_7d_avg") - 1.0 * F.col("rain_7d_stddev"))), 0.8) # Severe Dry Spell
+            (F.col("rainfall_mm") < (F.col("rain_7d_avg") - RAIN_DRY_Z * F.col("rain_7d_stddev"))), 0.8) # Severe Dry Spell
         .otherwise(0.0)
     )
     .select("state", "district", "district_key", "event_date", "date_int", "rainfall_mm", "rain_7d_avg", "rain_7d_stddev", "rain_score")
@@ -110,25 +105,22 @@ df_signal_a = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Signal B: Market Stress Score (25%)
+# MAGIC ## 3. Signal B: Market Stress Score (25%) - Z-Score Anomaly
 
 # COMMAND ----------
 
-# ── Signal B: Market Stress Score (25%) ───────────────────────────────────────
-# Window: partition by district_key and commodity
 window_30d = Window.partitionBy("district_key", "commodity").orderBy("date_int").rowsBetween(-29, 0)
 
 df_mandi_base = (
     df_mandi_processed
     .withColumn("price_30d_avg",   F.avg("modal_price").over(window_30d))
     .withColumn("price_30d_stddev", F.stddev("modal_price").over(window_30d))
-    
     .withColumn("arrival_30d_avg", F.avg("arrivals_tonnes").over(window_30d))
     .withColumn("arrival_30d_stddev", F.stddev("arrivals_tonnes").over(window_30d))
     
     .withColumn("price_spike_flag", F.when(
         (F.col("price_30d_stddev").isNotNull()) & (F.col("price_30d_stddev") > 0) & 
-        (F.col("modal_price") > (F.col("price_30d_avg") + 1.5 * F.col("price_30d_stddev"))), 1.0).otherwise(0.0))
+        (F.col("modal_price") > (F.col("price_30d_avg") + PRICE_SPIKE_Z * F.col("price_30d_stddev"))), 1.0).otherwise(0.0))
         
     .withColumn("arrival_dip_flag", F.when(
         (F.col("arrival_30d_stddev").isNotNull()) & (F.col("arrival_30d_stddev") > 0) & 
@@ -164,7 +156,7 @@ df_signal_c = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Fixed Join & Confidence Computation
+# MAGIC ## 5. Signal Triangulation & Confidence Score
 
 # COMMAND ----------
 
@@ -180,13 +172,13 @@ df_triangulated = (
             (F.col("kcc_stress_score") * 0.25), 
         4)
     )
-    .withColumn("is_valid_trigger", F.when(F.col("confidence_score") >= 0.60, True).otherwise(False))
+    .withColumn("is_valid_trigger", F.when(F.col("confidence_score") >= CONF_THRESH, True).otherwise(False))
 )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Write Confirmed Triggers
+# MAGIC ## 6. Write to Silver UC Table
 
 # COMMAND ----------
 
@@ -196,12 +188,14 @@ df_confirmed = (
     .orderBy(F.col("confidence_score").desc())
 )
 
+table_silver = f"{FULL_SCHEMA_PATH}.silver_confirmed_triggers"
+
 (df_confirmed.write
    .format("delta")
    .mode("overwrite")
    .option("overwriteSchema", "true")
-   .save(SILVER_SINK))
+   .saveAsTable(table_silver))
 
-print(f"✅  SILVER BUGFIX (v2.2) COMPLETE")
-print(f"📊  TOTAL VALID TRIGGERS : {df_confirmed.count():,}")
+print(f"✅ SILVER UC MIGRATION COMPLETE: {table_silver}")
+print(f"📊 TOTAL VALID TRIGGERS : {df_confirmed.count():,}")
 display(df_confirmed.limit(20))

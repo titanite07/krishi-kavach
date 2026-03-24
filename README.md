@@ -1,144 +1,63 @@
 # 🌾 Krishi-Kavach
+> **Parametric Crop Insurance Triangulation System**  
+> Powered by Databricks · Unity Catalog · PySpark · Z-Score Anomaly Detection
 
-> **Parametric Crop Insurance Trigger System for India**  
-> Powered by Databricks · PySpark · Delta Lake
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: Databricks](https://img.shields.io/badge/Platform-Databricks-red.svg)](https://databricks.com)
-[![Language: PySpark](https://img.shields.io/badge/Language-PySpark-blue.svg)](https://spark.apache.org/docs/latest/api/python/)
+[![Storage: Unity Catalog](https://img.shields.io/badge/Storage-Unity%20Catalog-orange.svg)](https://www.databricks.com/product/unity-catalog)
 
 ---
 
 ## 📌 Overview
+**Krishi-Kavach** ("Crop Shield") is a production-grade parametric insurance engine that cross-validates climate distress by triangulating 3 independent signals: **Weather Anomalies**, **Market Price Volatility**, and **Social Distress Queries** (Kisan Call Center).
 
-**Krishi-Kavach** ("Crop Shield" in Hindi) is a hackathon-grade end-to-end parametric insurance trigger pipeline built on **Databricks + Delta Lake**.  
-It ingests multi-source data (farmer voice stress scores, IMD satellite rainfall, PMFBY government policy), detects valid trigger events using a confidence-score model, and simulates insurance payouts — all visualised in a single chart.
-
----
-
-## 🏗️ Architecture
-
-```
-[Raw CSVs on DBFS]
-      │
-      ▼
-┌──────────────────────┐
-│  01 · Bronze Layer   │  Schema validation, type casting, Delta write
-└──────────┬───────────┘
-           │
-           ▼
-┌──────────────────────┐
-│  02 · Silver Layer   │  Enrichment, ±2h time-window join, confidence scoring
-└──────────┬───────────┘
-           │
-           ▼
-┌──────────────────────┐
-│  03 · Gold Layer Viz │  Payout simulation bar chart (matplotlib + display())
-└──────────────────────┘
-```
+By using **Z-Score based anomaly detection**, it identifies extreme climatic events with statistical precision, reducing insurance 'basis risk' for millions of Indian farmers.
 
 ---
 
-## 📂 Project Structure
+## 🏗️ Architecture (Unity Catalog)
+The pipeline is managed via **Unity Catalog (UC)** with a multi-layered governed approach:
 
-```
-krishi-kavach/
-├── notebooks/
-│   ├── 01_bronze_layer.py      # CSV ingestion → Delta (farmer_voice, imd_grids, pmfby_policy)
-│   ├── 02_silver_layer.py      # Enrichment + ±2 h join + confidence scoring → events_confirmed
-│   └── 03_gold_payout_viz.py   # Payout simulation visualisation (matplotlib bar chart)
-├── data/
-│   └── sample/
-│       ├── farmer_voice.csv    # Sample IVR stress-score data
-│       ├── imd_grids.csv       # Sample IMD satellite rainfall data
-│       └── pmfby_policy.csv    # Sample PMFBY crop insurance policy master
-├── requirements.txt
-├── LICENSE
-└── README.md
-```
+1.  **Ingestion Layer**: Raw CSVs uploaded to **UC Volumes** (`/Volumes/main/krishi_kavach/input/`).
+2.  **Bronze Layer**: Managed Tables for all 6 signals with autonomous **District Normalization** (CRT).
+3.  **Silver Layer**: **Z-Score Anomaly Detection** and 3-Signal Triangulation.
+4.  **Gold Layer**: Payout Simulation & Stakeholder Risk Dashboard.
 
 ---
 
 ## 🚀 Getting Started
 
-### Prerequisites
-- Databricks workspace (Runtime ≥ 12.x with Delta Lake)
-- DBFS write access to `dbfs:/FileStore/krishi_kavach/`
-- `gh` CLI (optional, for local development)
+### 1. Data Setup
+Upload the 6 production CSVs from `data/production_input/` to your Databricks **Unity Catalog Volume**:
+`/Volumes/<catalog>/<schema>/input/`
 
-### 1 — Upload Sample Data
-
-```bash
-# Using Databricks CLI
-databricks fs cp data/sample/farmer_voice.csv  dbfs:/FileStore/krishi_kavach/input/farmer_voice.csv
-databricks fs cp data/sample/imd_grids.csv     dbfs:/FileStore/krishi_kavach/input/imd_grids.csv
-databricks fs cp data/sample/pmfby_policy.csv  dbfs:/FileStore/krishi_kavach/input/pmfby_policy.csv
-```
-
-### 2 — Import Notebooks into Databricks
-
-In your Databricks workspace:  
-**Workspace → Import → Browse** → select each `.py` file from the `notebooks/` folder.
-
-Databricks auto-detects `# COMMAND ----------` cell markers.
-
-### 3 — Run in Order
-
-| # | Notebook | Output Delta Path |
-|---|----------|-------------------|
-| 1 | `01_bronze_layer.py` | `bronze/farmer_voice`, `bronze/imd_grids`, `bronze/pmfby_policy` |
-| 2 | `02_silver_layer.py` | `silver/events_confirmed` |
-| 3 | `03_gold_payout_viz.py` | *(reads* `gold/payout_simulation` *— generate this from Silver)* |
+### 2. Execution Order
+Run the notebooks in the following order:
+1.  `00_district_crt`: Standardizes district name variants.
+2.  `01_bronze_layer`: Ingests volumes into managed tables.
+3.  `02_silver_layer`: Computes statistical triggers (Z-Score model).
+4.  `fraud_guard`: Identifies social manipulation & Sybil attacks.
+5.  `03_gold_payout_viz`: Generates the fiscal risk dashboard.
 
 ---
 
-## 📊 Confidence Score Model
+## 📊 The Triangulation Model
 
-| Signal | Column | Weight |
-|--------|--------|--------|
-| Farmer voice stress | `raw_stress_score` | **0.4** |
-| Rainfall anomaly | `rain_anomaly_flag` | **0.6** |
+An event is confirmed if the **Weighted Confidence Score >= 0.60**:
 
-```
-confidence_score = (raw_stress_score × 0.4) + (rain_anomaly_flag × 0.6)
-is_valid_event   = confidence_score ≥ 0.70
-```
+| Signal | Source | Logic | Weight |
+|--------|--------|-------|--------|
+| **Weather** | IMD Rainfall | Rainfall Z-Score > 1.5$\sigma$ | **50%** |
+| **Market** | Mandi Prices | Price Z-Score > 1.5$\sigma$ | **25%** |
+| **Social** | KCC Queries | Query Volume Spikes | **25%** |
 
 ---
 
-## 🧪 Sample Data Schema
-
-### `farmer_voice.csv`
-| Column | Type | Description |
-|--------|------|-------------|
-| timestamp | Timestamp | IVR call timestamp |
-| mandi | String | Nearest market (mandi) name |
-| district | String | Administrative district |
-| language | String | Call language (Hindi / Marathi …) |
-| device_id | String | Farmer handset ID |
-| raw_stress_score | Double | ML-derived stress score [0–1] |
-
-### `imd_grids.csv`
-| Column | Type | Description |
-|--------|------|-------------|
-| timestamp | Timestamp | Satellite observation time |
-| district | String | Administrative district |
-| grid_lat / grid_lon | Double | Grid centroid coordinates |
-| seasonal_rain_mm | Double | Cumulative seasonal rainfall |
-| seasonal_rain_threshold_90 | Double | 90th-percentile seasonal threshold |
-| actual_rain_mm | Double | Measured rainfall for the period |
-
-### `pmfby_policy.csv`
-| Column | Type | Description |
-|--------|------|-------------|
-| district | String | Administrative district |
-| crop | String | Crop type |
-| sum_insured | Double | Insurance face value (₹) |
-| payout_rate | Double | Fraction of sum insured paid out |
-| season | String | Kharif / Rabi |
+## 🛠️ Key Features
+- **Dynamic Backtesting**: Use Databricks Widgets to adjust Z-score thresholds and payout rates live.
+- **Fraud Guard**: Integrity layer to flag zero-weather high-confidence anomalies.
+- **District CRT**: Autonomous resolution of historical/local district name variants.
 
 ---
 
 ## 📄 License
-
 MIT © 2026 · Krishi-Kavach Team
