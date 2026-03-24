@@ -6,11 +6,11 @@
 # MAGIC ### 🐛 Update (v3.0): 
 # MAGIC Migrated to **Unity Catalog** and implemented **Z-Score Anomaly Detection** for higher statistical precision.
 # MAGIC 
-| Signal | Component | Source UC Table | Weight |
-|--------|-----------|-----------------|--------|
-| Signal A | Weather Anomaly | `bronze_imd_rainfall` | 50% |
-| Signal B | Market Stress | `bronze_mandi_prices` | 25% |
-| Signal C | Social Distress | `bronze_kcc_2022` | 25% |
+# MAGIC | Signal | Component | Source UC Table | Weight |
+# MAGIC |--------|-----------|-----------------|--------|
+# MAGIC | Signal A | Weather Anomaly | `bronze_imd_rainfall` | 50% |
+# MAGIC | Signal B | Market Stress | `bronze_mandi_prices` | 25% |
+# MAGIC | Signal C | Social Distress | `bronze_kcc_2022` | 25% |
 
 # COMMAND ----------
 

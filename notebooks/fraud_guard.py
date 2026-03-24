@@ -3,11 +3,11 @@
 # MAGIC # Krishi-Kavach | Silver Layer · Fraud Guard [UC Version]
 # MAGIC **Purpose:** Validate confirmed triggers against pre-defined fraud rules using UC Managed Tables.
 # MAGIC 
-# MAGIC | Factor | Rule | Logic |
-|--------|------|-------|
-| Bulk Activity | Rule 1 | > 5 inquiries from same device per district/day |
-| Zero-Weather | Rule 2 | High social stress without supporting rainfall/price |
-| High Confidence | Rule 3 | Conf > 0.7 without any weather signal support |
+# MAGIC # MAGIC | Factor | Rule | Logic |
+# MAGIC # MAGIC |--------|------|-------|
+# MAGIC # MAGIC | Bulk Activity | Rule 1 | > 5 inquiries from same device per district/day |
+# MAGIC # MAGIC | Zero-Weather | Rule 2 | High social stress without supporting rainfall/price |
+# MAGIC # MAGIC | High Confidence | Rule 3 | Conf > 0.7 without any weather signal support |
 
 # COMMAND ----------
 

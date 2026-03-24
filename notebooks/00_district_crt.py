@@ -4,10 +4,10 @@
 # MAGIC **Purpose:** Standardize inconsistent district names across UC-managed datasets.
 # MAGIC 
 # MAGIC | Feature | Logic |
-|---------|-------|
-| Canonical Mapping | Lookup table for historical & local variants |
-| normalization UDF | Spark SQL function for on-the-fly cleaning |
-| UC Storage | Managed table: `<catalog>.<schema>.district_crt` |
+# MAGIC |---------|-------|
+# MAGIC | Canonical Mapping | Lookup table for historical & local variants |
+# MAGIC | normalization UDF | Spark SQL function for on-the-fly cleaning |
+# MAGIC | UC Storage | Managed table: `<catalog>.<schema>.district_crt` |
 
 # COMMAND ----------
 

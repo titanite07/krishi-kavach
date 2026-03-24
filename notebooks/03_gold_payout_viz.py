@@ -4,8 +4,8 @@
 # MAGIC **Purpose:** Join confirmed triggers with PMFBY policies and simulate payouts using UC Managed Tables.
 # MAGIC 
 # MAGIC | Component | Logic | Target UC Table |
-|-----------|-------|-----------------|
-| Payout Logic | Sum_Insured * Payout_Rate * Damage_Index | `gold_payout_simulation` |
+# MAGIC |-----------|-------|-----------------|
+# MAGIC | Payout Logic | Sum_Insured * Payout_Rate * Damage_Index | `gold_payout_simulation` |
 
 # COMMAND ----------
 

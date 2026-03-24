@@ -3,14 +3,14 @@
 # MAGIC # Krishi-Kavach | 01 — Bronze Layer · Data Ingestion [UC Version]
 # MAGIC **Purpose:** Ingest raw CSV datasets from UC Volumes into managed Delta tables with district normalization.
 # MAGIC 
-# MAGIC | Dataset | UC Volume Path | Target UC Table |
-|---------|----------------|-----------------|
-| IMD Rainfall | `/Volumes/<c>/<s>/input/imd_rainfall_2022.csv` | `bronze_imd_rainfall` |
-| Mandi Prices | `/Volumes/<c>/<s>/input/mandi_prices.csv` | `bronze_mandi_prices` |
-| Daily Rain | `/Volumes/<c>/<s>/input/district_daily_rainfall.csv` | `bronze_district_daily_rainfall` |
-| KCC Queries | `/Volumes/<c>/<s>/input/kcc_2022.csv` | `bronze_kcc_2022` |
-| PMFBY | `/Volumes/<c>/<s>/input/pmfby_policy.csv` | `bronze_pmfby_policy` |
-| AGMARKNET | `/Volumes/<c>/<s>/input/agmarknet_reference.csv` | `bronze_agmarknet_reference` |
+# MAGIC # MAGIC | Dataset | UC Volume Path | Target UC Table |
+# MAGIC # MAGIC |---------|----------------|-----------------|
+# MAGIC # MAGIC | IMD Rainfall | `/Volumes/<c>/<s>/input/imd_rainfall_2022.csv` | `bronze_imd_rainfall` |
+# MAGIC # MAGIC | Mandi Prices | `/Volumes/<c>/<s>/input/mandi_prices.csv` | `bronze_mandi_prices` |
+# MAGIC # MAGIC | Daily Rain | `/Volumes/<c>/<s>/input/district_daily_rainfall.csv` | `bronze_district_daily_rainfall` |
+# MAGIC # MAGIC | KCC Queries | `/Volumes/<c>/<s>/input/kcc_2022.csv` | `bronze_kcc_2022` |
+# MAGIC # MAGIC | PMFBY | `/Volumes/<c>/<s>/input/pmfby_policy.csv` | `bronze_pmfby_policy` |
+# MAGIC # MAGIC | AGMARKNET | `/Volumes/<c>/<s>/input/agmarknet_reference.csv` | `bronze_agmarknet_reference` |
 
 # COMMAND ----------
 
