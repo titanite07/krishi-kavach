@@ -1,76 +1,98 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Krishi-Kavach | 03 — Gold Layer · Payout Visualisation
-# MAGIC **Purpose:** Load the Gold payout simulation table and render a bar chart
-# MAGIC of total simulated insurance payouts per district.
+# MAGIC # Krishi-Kavach | 03 — Gold Layer · Payout Visualisation (Production)
+# MAGIC **Purpose:** Connect confirmed triggers to PMFBY insurance policy data, calculate final simulated payouts, and render visualizations.
+# MAGIC 
+# MAGIC | Process | Source | Logic |
+# MAGIC |---------|--------|-------|
+# MAGIC | Triggers | `silver/events_confirmed` | CONFIDENCE_SCORE >= 0.6 |
+# MAGIC | Policies | `bronze/pmfby_policy` | SUM_INSURED per State/Season |
+# MAGIC | Payout | Calculation | SUM_INSURED * CONFIDENCE_SCORE * DISRUPTION_FACTOR |
 
 # COMMAND ----------
 
+from pyspark.sql.functions import col, sum as spark_sum, count, avg, lit
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import pandas as pd
 
-# ── Load Gold Delta table ─────────────────────────────────────────────────────
-GOLD_PATH = "dbfs:/FileStore/krishi_kavach/gold/payout_simulation"
+# ── Paths ────────────────────────────────────────────────────────────────────
+SILVER_PATH = "dbfs:/FileStore/krishi_kavach/silver/events_confirmed"
+POLICY_PATH = "dbfs:/FileStore/krishi_kavach/bronze/pmfby_policy"
+GOLD_PATH   = "dbfs:/FileStore/krishi_kavach/gold/payout_simulation"
 
-df_gold = spark.read.format("delta").load(GOLD_PATH)
+# COMMAND ----------
 
-# ── Aggregate: total payout per district ─────────────────────────────────────
-df_agg = (
-    df_gold
-    .groupBy("district")
-    .sum("payout_amount")                          # sums the payout_amount column
-    .withColumnRenamed("sum(payout_amount)", "total_payout")
-    .orderBy("total_payout", ascending=False)      # largest payout first → natural reading order
-)
+# MAGIC %md
+# MAGIC ## 1. Load Confirmed Events & Policies
 
-# Convert to Pandas for matplotlib
-pdf = df_agg.toPandas()
+# COMMAND ----------
 
-# ── Chart ─────────────────────────────────────────────────────────────────────
-fig, ax = plt.subplots(figsize=(max(10, len(pdf) * 1.1), 6))
+df_triggers = spark.read.format("delta").load(SILVER_PATH)
+df_policy   = spark.read.format("delta").load(POLICY_PATH)
 
-bars = ax.bar(
-    pdf["district"],
-    pdf["total_payout"],
-    color="#2E8B57",          # Sea-green — agricultural theme
-    edgecolor="white",
-    linewidth=0.6,
-    width=0.6,
-)
+# COMMAND ----------
 
-# Value labels on top of each bar (formatted as ₹ with commas)
-for bar, value in zip(bars, pdf["total_payout"]):
-    ax.text(
-        bar.get_x() + bar.get_width() / 2.0,   # x-centre of bar
-        bar.get_height() * 1.01,                # just above bar top
-        f"₹{value:,.0f}",
-        ha="center", va="bottom",
-        fontsize=9, fontweight="bold", color="#1a1a1a"
+# MAGIC %md
+# MAGIC ## 2. Map District-Level Triggers to State-Level Policies
+# MAGIC *Note: The real PMFBY data we have is at the State level. Let's aggregate triggers per state to match.*
+
+# COMMAND ----------
+
+df_state_triggers = (
+    df_triggers
+    .groupBy("state")
+    .agg(
+        avg("confidence_score").alias("avg_confidence"),
+        count("*").alias("trigger_count"),
+        avg("rainfall_mm").alias("avg_rainfall")
     )
-
-# Axis labels & title
-ax.set_title(
-    "Krishi-Kavach: Simulated Insurance Payouts by District",
-    fontsize=14, fontweight="bold", pad=16
-)
-ax.set_xlabel("District", fontsize=11, labelpad=8)
-ax.set_ylabel("Payout Amount (₹)", fontsize=11, labelpad=8)
-
-# Format y-axis ticks with ₹ and comma separators
-ax.yaxis.set_major_formatter(
-    mticker.FuncFormatter(lambda x, _: f"₹{x:,.0f}")
 )
 
-# Rotate x-axis labels if there are many districts
-plt.xticks(rotation=30 if len(pdf) > 6 else 0, ha="right", fontsize=10)
-plt.yticks(fontsize=10)
+# Join with Policy
+df_payout = (
+    df_state_triggers.alias("t")
+    .join(df_policy.alias("p"), col("t.state") == col("p.state_name"), "inner")
+    .withColumn("payout_amount", col("p.sum_insured") * col("t.avg_confidence") * 0.1) # 10% base payout factor for trigger
+    .select(
+        col("p.state_name"), 
+        col("t.trigger_count"), 
+        col("p.sum_insured"), 
+        col("payout_amount"),
+        col("t.avg_confidence")
+    )
+)
 
-# Light grid for readability
-ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-ax.set_axisbelow(True)
+(df_payout.write.format("delta").mode("overwrite").save(GOLD_PATH))
 
-plt.tight_layout()
+# COMMAND ----------
 
-# Render inline in Databricks
+# MAGIC %md
+# MAGIC ## 3. Render Insurance Risk Visualization
+
+# COMMAND ----------
+
+pdf = df_payout.toPandas()
+
+fig, ax1 = plt.subplots(figsize=(12, 6))
+
+# Primary Bar Chart: Payout Amount
+color_payout = "#2E8B57"
+ax1.set_xlabel("State", fontsize=12)
+ax1.set_ylabel("Simulated Payout (₹)", fontsize=12, color=color_payout)
+bars = ax1.bar(pdf["state_name"], pdf["payout_amount"], color=color_payout, alpha=0.8, label="Simulated Payout")
+ax1.tick_params(axis='y', labelcolor=color_payout)
+
+# Secondary Chart: Confidence
+ax2 = ax1.twinx()
+ax2.set_ylabel("Avg Confidence", fontsize=12, color="#B22222")
+ax2.plot(pdf["state_name"], pdf["avg_confidence"], color="#B22222", marker='o', linewidth=2, label="Signal Strength")
+ax2.tick_params(axis='y', labelcolor="#B22222")
+ax2.set_ylim(0, 1.0)
+
+# Format Currency
+ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"₹{x/1e7:,.1f} Cr"))
+
+plt.title("Krishi-Kavach: Simulated PMFBY Payouts by State (2022 Data)", fontsize=14, fontweight="bold", pad=20)
+fig.tight_layout()
 display(fig)

@@ -1,79 +1,45 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Krishi-Kavach | 01 — Bronze Layer Ingestion
-# MAGIC **Purpose:** Read raw CSV files from DBFS, apply schema validation, and persist as Delta tables.
+# MAGIC # Krishi-Kavach | 01 — Bronze Layer Ingestion (Production)
+# MAGIC **Purpose:** Ingest real-world agricultural and weather datasets into the Bronze Delta layer.
 # MAGIC
-# MAGIC | Layer | Path |
-# MAGIC |-------|------|
-# MAGIC | Source (CSV) | `dbfs:/FileStore/krishi_kavach/input/` |
-# MAGIC | Sink (Delta) | `dbfs:/FileStore/krishi_kavach/bronze/` |
+# MAGIC # MAGIC | Dataset | Source File | Delta Table |
+# MAGIC |---------|-------------|-------------|
+# MAGIC | IMD Grids | `imd_rainfall_2022.csv` | `imd_grids` |
+# MAGIC | PMFBY Policies | `state-level-pmfby.csv` | `pmfby_policy` |
+# MAGIC | Daily Rainfall | `daily_rainfall_melted.csv` | `daily_rainfall` |
+# MAGIC | Mandi Prices | `mandi_prices_cleaned.csv` | `mandi_prices` |
+# MAGIC | KCC Queries | `kcc_2022_filtered.csv` | `kcc_queries` |
+# MAGIC | Agriculture Prices | `Agriculture_price_dataset.csv` | `agri_prices` |
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, to_timestamp
+from pyspark.sql.functions import col, to_date, to_timestamp, lit, concat_ws
 from pyspark.sql.types import (
     StructType, StructField,
-    StringType, DoubleType, TimestampType
+    StringType, DoubleType, IntegerType, DateType
 )
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 INPUT_BASE  = "dbfs:/FileStore/krishi_kavach/input"
 BRONZE_BASE = "dbfs:/FileStore/krishi_kavach/bronze"
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 1. Farmer Voice — raw stress scores from IVR/voice calls
-
-# COMMAND ----------
-
-# ── Schema definition ─────────────────────────────────────────────────────────
-farmer_voice_schema = StructType([
-    StructField("timestamp",        StringType(),  True),   # will cast below
-    StructField("mandi",            StringType(),  True),
-    StructField("district",         StringType(),  True),
-    StructField("language",         StringType(),  True),
-    StructField("device_id",        StringType(),  True),
-    StructField("raw_stress_score", DoubleType(),  True),
-])
-
-# ── Read CSV ──────────────────────────────────────────────────────────────────
-df_farmer_raw = (
-    spark.read
-         .option("header", "true")
-         .schema(farmer_voice_schema)
-         .csv(f"{INPUT_BASE}/farmer_voice.csv")
-)
-
-# ── Cast timestamp & drop nulls ───────────────────────────────────────────────
-df_farmer = (
-    df_farmer_raw
-    .withColumn("timestamp", to_timestamp(col("timestamp")))   # ISO-8601 or epoch string
-    .withColumn("raw_stress_score", col("raw_stress_score").cast(DoubleType()))
-    .dropna(subset=["timestamp", "district", "raw_stress_score"])  # mandatory fields
-)
-
-# ── Write as Delta ────────────────────────────────────────────────────────────
-(
-    df_farmer
-    .write
-    .format("delta")
-    .mode("overwrite")
-    .option("overwriteSchema", "true")
-    .save(f"{BRONZE_BASE}/farmer_voice")
-)
-
-count_farmer = spark.read.format("delta").load(f"{BRONZE_BASE}/farmer_voice").count()
-print(f"✅  Bronze | farmer_voice  → {count_farmer:,} rows written")
+def write_to_bronze(df, table_name):
+    (df.write
+       .format("delta")
+       .mode("overwrite")
+       .option("overwriteSchema", "true")
+       .save(f"{BRONZE_BASE}/{table_name}"))
+    print(f"✅ Bronze | {table_name:<15} -> {df.count():,} rows written")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. IMD Grids — satellite-derived rainfall data
+# MAGIC ## 1. IMD Gridded Rainfall (Processed NetCDF)
 
 # COMMAND ----------
 
-imd_grids_schema = StructType([
+imd_schema = StructType([
     StructField("timestamp",                  StringType(), True),
     StructField("district",                   StringType(), True),
     StructField("grid_lat",                   DoubleType(), True),
@@ -83,89 +49,124 @@ imd_grids_schema = StructType([
     StructField("actual_rain_mm",             DoubleType(), True),
 ])
 
-df_imd_raw = (
-    spark.read
-         .option("header", "true")
-         .schema(imd_grids_schema)
-         .csv(f"{INPUT_BASE}/imd_grids.csv")
-)
+df_imd = (spark.read.option("header", "true").schema(imd_schema).csv(f"{INPUT_BASE}/imd_rainfall_2022.csv")
+          .withColumn("timestamp", to_timestamp(col("timestamp"))))
 
-# Cast + validate all numerical columns
-df_imd = (
-    df_imd_raw
-    .withColumn("timestamp",                  to_timestamp(col("timestamp")))
-    .withColumn("grid_lat",                   col("grid_lat").cast(DoubleType()))
-    .withColumn("grid_lon",                   col("grid_lon").cast(DoubleType()))
-    .withColumn("seasonal_rain_mm",           col("seasonal_rain_mm").cast(DoubleType()))
-    .withColumn("seasonal_rain_threshold_90", col("seasonal_rain_threshold_90").cast(DoubleType()))
-    .withColumn("actual_rain_mm",             col("actual_rain_mm").cast(DoubleType()))
-    .dropna(subset=["timestamp", "district", "actual_rain_mm"])
-)
-
-(
-    df_imd
-    .write
-    .format("delta")
-    .mode("overwrite")
-    .option("overwriteSchema", "true")
-    .save(f"{BRONZE_BASE}/imd_grids")
-)
-
-count_imd = spark.read.format("delta").load(f"{BRONZE_BASE}/imd_grids").count()
-print(f"✅  Bronze | imd_grids     → {count_imd:,} rows written")
+write_to_bronze(df_imd, "imd_grids")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. PMFBY Policy — government crop insurance master
+# MAGIC ## 2. PMFBY State-Level Policies
 
 # COMMAND ----------
 
 pmfby_schema = StructType([
-    StructField("district",     StringType(), True),
-    StructField("crop",         StringType(), True),
-    StructField("sum_insured",  DoubleType(), True),
-    StructField("payout_rate",  DoubleType(), True),
-    StructField("season",       StringType(), True),
+    StructField("id",              IntegerType(), True),
+    StructField("year",            IntegerType(), True),
+    StructField("season",          StringType(),  True),
+    StructField("scheme",          StringType(),  True),
+    StructField("state_id",        IntegerType(), True),
+    StructField("state_name",      StringType(),  True),
+    StructField("farmer_count",    IntegerType(), True),
+    StructField("land_area",       DoubleType(),  True),
+    StructField("sum_insured",     DoubleType(),  True),
+    StructField("gross_premium",   DoubleType(),  True),
+    StructField("farmer_premium",  DoubleType(),  True),
+    StructField("central_subsidy", DoubleType(),  True),
+    StructField("state_subsidy",   DoubleType(),  True),
 ])
 
-df_pmfby_raw = (
-    spark.read
-         .option("header", "true")
-         .schema(pmfby_schema)
-         .csv(f"{INPUT_BASE}/pmfby_policy.csv")
-)
-
-df_pmfby = (
-    df_pmfby_raw
-    .withColumn("sum_insured", col("sum_insured").cast(DoubleType()))
-    .withColumn("payout_rate", col("payout_rate").cast(DoubleType()))
-    .dropna(subset=["district", "crop", "sum_insured", "payout_rate"])
-)
-
-(
-    df_pmfby
-    .write
-    .format("delta")
-    .mode("overwrite")
-    .option("overwriteSchema", "true")
-    .save(f"{BRONZE_BASE}/pmfby_policy")
-)
-
-count_pmfby = spark.read.format("delta").load(f"{BRONZE_BASE}/pmfby_policy").count()
-print(f"✅  Bronze | pmfby_policy  → {count_pmfby:,} rows written")
+df_pmfby = spark.read.option("header", "true").schema(pmfby_schema).csv(f"{INPUT_BASE}/state-level-pmfby.csv")
+write_to_bronze(df_pmfby, "pmfby_policy")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Summary
+# MAGIC ## 3. Daily District-wise Rainfall (Melted)
 
 # COMMAND ----------
 
-print("=" * 55)
-print("  Krishi-Kavach · Bronze Layer Ingestion Complete")
-print("=" * 55)
-print(f"  farmer_voice  : {count_farmer:>8,} rows")
-print(f"  imd_grids     : {count_imd:>8,} rows")
-print(f"  pmfby_policy  : {count_pmfby:>8,} rows")
-print("=" * 55)
+daily_rain_schema = StructType([
+    StructField("state",       StringType(), True),
+    StructField("district",    StringType(), True),
+    StructField("month",       StringType(), True),
+    StructField("day",         IntegerType(), True),
+    StructField("rainfall_mm", DoubleType(),  True),
+])
+
+# Note: We will construct a real date in the Silver layer
+df_daily_rain = spark.read.option("header", "true").schema(daily_rain_schema).csv(f"{INPUT_BASE}/daily_rainfall_melted.csv")
+write_to_bronze(df_daily_rain, "daily_rainfall")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Mandi Market Prices (Cleaned)
+
+# COMMAND ----------
+
+mandi_schema = StructType([
+    StructField("State",        StringType(), True),
+    StructField("District",     StringType(), True),
+    StructField("Market",       StringType(), True),
+    StructField("Commodity",    StringType(), True),
+    StructField("Variety",      StringType(), True),
+    StructField("Grade",        StringType(), True),
+    StructField("Arrival_Date", StringType(), True),
+    StructField("Min_Price",    DoubleType(), True),
+    StructField("Max_Price",    DoubleType(), True),
+    StructField("Modal_Price",  DoubleType(), True),
+])
+
+df_mandi = (spark.read.option("header", "true").schema(mandi_schema).csv(f"{INPUT_BASE}/mandi_prices_cleaned.csv")
+            .withColumn("Arrival_Date", to_date(col("Arrival_Date"))))
+
+write_to_bronze(df_mandi, "mandi_prices")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 5. KCC Query Logs (Filtered 2022)
+
+# COMMAND ----------
+
+kcc_schema = StructType([
+    StructField("Year",         IntegerType(), True),
+    StructField("Month",        IntegerType(), True),
+    StructField("Day",          IntegerType(), True),
+    StructField("Crop",         StringType(),  True),
+    StructField("DistrictName", StringType(),  True),
+    StructField("QueryType",    StringType(),  True),
+    StructField("Season",       StringType(),  True),
+    StructField("Sector",       StringType(),  True),
+    StructField("StateName",    StringType(),  True),
+])
+
+df_kcc = spark.read.option("header", "true").schema(kcc_schema).csv(f"{INPUT_BASE}/kcc_2022_filtered.csv")
+write_to_bronze(df_kcc, "kcc_queries")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 6. Historical Agri Prices
+
+# COMMAND ----------
+
+agri_price_schema = StructType([
+    StructField("STATE",         StringType(), True),
+    StructField("District Name", StringType(), True),
+    StructField("Market Name",   StringType(), True),
+    StructField("Commodity",     StringType(), True),
+    StructField("Variety",       StringType(), True),
+    StructField("Grade",         StringType(), True),
+    StructField("Min_Price",     DoubleType(), True),
+    StructField("Max_Price",     DoubleType(), True),
+    StructField("Modal_Price",   DoubleType(), True),
+    StructField("Price Date",    StringType(), True),
+])
+
+df_agri_prices = (spark.read.option("header", "true").schema(agri_price_schema).csv(f"{INPUT_BASE}/Agriculture_price_dataset.csv")
+                  .withColumn("Price Date", to_date(col("Price Date"), "d/M/yyyy")))
+
+write_to_bronze(df_agri_prices, "agri_prices")
