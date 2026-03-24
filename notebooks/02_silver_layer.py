@@ -94,12 +94,17 @@ window_7d = Window.partitionBy("state", "district").orderBy("date_int").rowsBetw
 df_signal_a = (
     df_rain_processed
     .withColumn("rain_7d_avg", F.avg("rainfall_mm").over(window_7d))
+    .withColumn("rain_7d_stddev", F.stddev("rainfall_mm").over(window_7d))
     .withColumn("rain_score", 
-        F.when(F.col("rainfall_mm") > (F.col("rain_7d_avg") * RAIN_SPIKE_MULT), 1.0) # Extreme Spike
-        .when(F.col("rainfall_mm") < (F.col("rain_7d_avg") * RAIN_DROUGHT_MULT), 0.8) # Severe Dry Spell
+        F.when(
+            (F.col("rain_7d_stddev").isNotNull()) & (F.col("rain_7d_stddev") > 0) & 
+            (F.col("rainfall_mm") > (F.col("rain_7d_avg") + 1.5 * F.col("rain_7d_stddev"))), 1.0) # Extreme Spike
+        .when(
+            (F.col("rain_7d_stddev").isNotNull()) & (F.col("rain_7d_stddev") > 0) & 
+            (F.col("rainfall_mm") < (F.col("rain_7d_avg") - 1.0 * F.col("rain_7d_stddev"))), 0.8) # Severe Dry Spell
         .otherwise(0.0)
     )
-    .select("state", "district", "district_key", "event_date", "date_int", "rainfall_mm", "rain_7d_avg", "rain_score")
+    .select("state", "district", "district_key", "event_date", "date_int", "rainfall_mm", "rain_7d_avg", "rain_7d_stddev", "rain_score")
 )
 
 # COMMAND ----------
@@ -116,9 +121,18 @@ window_30d = Window.partitionBy("district_key", "commodity").orderBy("date_int")
 df_mandi_base = (
     df_mandi_processed
     .withColumn("price_30d_avg",   F.avg("modal_price").over(window_30d))
+    .withColumn("price_30d_stddev", F.stddev("modal_price").over(window_30d))
+    
     .withColumn("arrival_30d_avg", F.avg("arrivals_tonnes").over(window_30d))
-    .withColumn("price_spike_flag", F.when(F.col("modal_price") > (F.col("price_30d_avg") * PRICE_SPIKE_MULT), 1.0).otherwise(0.0))
-    .withColumn("arrival_dip_flag", F.when(F.col("arrivals_tonnes") < (F.col("arrival_30d_avg") * 0.5), 1.0).otherwise(0.0))
+    .withColumn("arrival_30d_stddev", F.stddev("arrivals_tonnes").over(window_30d))
+    
+    .withColumn("price_spike_flag", F.when(
+        (F.col("price_30d_stddev").isNotNull()) & (F.col("price_30d_stddev") > 0) & 
+        (F.col("modal_price") > (F.col("price_30d_avg") + 1.5 * F.col("price_30d_stddev"))), 1.0).otherwise(0.0))
+        
+    .withColumn("arrival_dip_flag", F.when(
+        (F.col("arrival_30d_stddev").isNotNull()) & (F.col("arrival_30d_stddev") > 0) & 
+        (F.col("arrivals_tonnes") < (F.col("arrival_30d_avg") - 1.0 * F.col("arrival_30d_stddev"))), 1.0).otherwise(0.0))
     .withColumn("raw_price_score", (F.col("price_spike_flag") * 0.5) + (F.col("arrival_dip_flag") * 0.5))
 )
 
