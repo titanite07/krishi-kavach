@@ -50,6 +50,7 @@ data/Kcc/kcc_dataset.csv
 data/Kcc/kcc_2022_filtered.csv
 data/Price/Agriculture_price_dataset.csv
 data/Rainfall/Indian Rainfall Dataset District-wise Daily Measurements.csv
+data/production_input/
 
 # Terraform (if used for infra-as-code)
 .terraform/

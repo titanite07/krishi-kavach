@@ -1,12 +1,13 @@
+
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Krishi-Kavach | Silver Layer · Fraud Guard & Integrity Check
 # MAGIC **Purpose:** Validate confirmed triggers against pre-defined fraud rules to prevent social-media manipulation or system gaming.
-| Factor | Rule | Logic |
-|--------|------|-------|
-| Bulk Activity | Rule 1 | > 5 inquiries from same device per district/day |
-| Zero-Weather | Rule 2 | High social stress without supporting rainfall/price |
-| High Confidence | Rule 3 | Conf > 0.7 without any weather signal support |
+# MAGIC | Factor | Rule | Logic |
+# MAGIC |--------|------|-------|
+# MAGIC | Bulk Activity | Rule 1 | > 5 inquiries from same device per district/day |
+# MAGIC | Zero-Weather | Rule 2 | High social stress without supporting rainfall/price |
+# MAGIC | High Confidence | Rule 3 | Conf > 0.7 without any weather signal support |
 
 # COMMAND ----------
 
