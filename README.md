@@ -14,29 +14,54 @@ By using **Z-Score based anomaly detection**, it identifies extreme climatic eve
 
 ---
 
-## 🏗️ Architecture (Unity Catalog)
-The pipeline is managed via **Unity Catalog (UC)** with a multi-layered governed approach:
+---
 
-1.  **Ingestion Layer**: Raw CSVs uploaded to **UC Volumes** (`/Volumes/main/krishi_kavach/input/`).
-2.  **Bronze Layer**: Managed Tables for all 6 signals with autonomous **District Normalization** (CRT).
-3.  **Silver Layer**: **Z-Score Anomaly Detection** and 3-Signal Triangulation.
-4.  **Gold Layer**: Payout Simulation & Stakeholder Risk Dashboard.
+## 🏛️ Architecture & How It Works
+Krishi-Kavach is designed to eliminate **Basis Risk** in crop insurance by moving from a single-point weather station model to a **triangulated validation engine**.
+
+```mermaid
+graph TD
+    subgraph "1. Ingestion (UC Volumes)"
+        RAW["📥 Raw CSVs (IMD, Mandi, KCC)"]
+    end
+
+    subgraph "2. Bronze Layer (Managed Tables)"
+        BR["🛡️ Bronze Tables"]
+        CRT["🧩 District CRT (Normalization)"]
+        RAW --> BR
+        BR -.-> CRT
+    end
+
+    subgraph "3. Silver Layer (Z-Score Analysis)"
+        Z["📊 Z-Score Anomaly Engine"]
+        ST["⚡ 3-Signal Triangulation"]
+        FG["🕵️ Fraud Guard (Validation)"]
+        BR --> Z --> ST --> FG
+    end
+
+    subgraph "4. Gold Layer (Stakeholder Dashboard)"
+        PL["💰 Payout Simulation"]
+        DB["📈 Risk Dashboard"]
+        FG --> PL --> DB
+    end
+```
+
+### The "Triangulation" Idea:
+Instead of relying only on a rain gauge (which might fail), our engine only triggers a payout if **at least two independent systems** confirm distress:
+- **Satellite Signal**: rainfall Z-score indicates 1.5$\sigma$ deficit.
+- **Market Signal**: Mandi price Z-score indicates a 1.5$\sigma$ spike (scarcity).
+- **Social Signal**: High-volume farmer 'Weather' and 'Pest' inquiries in KCC logs.
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Execution Workflow
+To run the end-to-end pipeline in Databricks, follow this workflow:
 
-### 1. Data Setup
-Upload the 6 production CSVs from `data/production_input/` to your Databricks **Unity Catalog Volume**:
-`/Volumes/<catalog>/<schema>/input/`
-
-### 2. Execution Order
-Run the notebooks in the following order:
-1.  `00_district_crt`: Standardizes district name variants.
-2.  `01_bronze_layer`: Ingests volumes into managed tables.
-3.  `02_silver_layer`: Computes statistical triggers (Z-Score model).
-4.  `fraud_guard`: Identifies social manipulation & Sybil attacks.
-5.  `03_gold_payout_viz`: Generates the fiscal risk dashboard.
+1.  **`00_district_crt.py`**: Runs first to register the normalization UDF. It resolves naming conflicts (e.g. *Allahabad* to *Prayagraj*) across all datasets.
+2.  **`01_bronze_layer.py`**: Ingests production CSVs from UC Volumes into governed tables.
+3.  **`02_silver_layer.py`**: The heavy lifter—calculates rolling statistics, Z-scores, and generates the **Confidence Score**.
+4.  **`fraud_guard.py`**: An automated integrity check that strips away suspicious triggers (e.g., social gaming).
+5.  **`03_gold_payout_viz.py`**: Final simulation that joins triggers with PMFBY policies and renders the fiscal dashboard.
 
 ---
 
