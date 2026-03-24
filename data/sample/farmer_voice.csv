@@ -1,0 +1,11 @@
+timestamp,mandi,district,language,device_id,raw_stress_score
+2024-06-01 08:00:00,Pune Mandi,Pune,Marathi,DEV001,0.85
+2024-06-01 08:15:00,Nashik Mandi,Nashik,Marathi,DEV002,0.72
+2024-06-01 08:30:00,Nagpur Mandi,Nagpur,Hindi,DEV003,0.60
+2024-06-01 09:00:00,Aurangabad Mandi,Aurangabad,Marathi,DEV004,0.91
+2024-06-01 09:15:00,Solapur Mandi,Solapur,Kannada,DEV005,0.45
+2024-06-01 09:30:00,Pune Mandi,Pune,Marathi,DEV006,0.78
+2024-06-01 10:00:00,Nashik Mandi,Nashik,Marathi,DEV007,0.55
+2024-06-01 10:15:00,Nagpur Mandi,Nagpur,Hindi,DEV008,0.88
+2024-06-01 10:30:00,Aurangabad Mandi,Aurangabad,Marathi,DEV009,0.33
+2024-06-01 11:00:00,Latur Mandi,Latur,Kannada,DEV010,0.76

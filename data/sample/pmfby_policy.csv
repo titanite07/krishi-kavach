@@ -1,0 +1,11 @@
+district,crop,sum_insured,payout_rate,season
+Pune,Sugarcane,50000.0,0.30,Kharif
+Nashik,Grapes,75000.0,0.25,Kharif
+Nagpur,Orange,60000.0,0.35,Rabi
+Aurangabad,Cotton,45000.0,0.40,Kharif
+Solapur,Soybean,40000.0,0.20,Kharif
+Latur,Tur Dal,35000.0,0.30,Kharif
+Pune,Wheat,30000.0,0.25,Rabi
+Nashik,Onion,55000.0,0.35,Rabi
+Nagpur,Rice,42000.0,0.30,Kharif
+Aurangabad,Jowar,28000.0,0.20,Rabi

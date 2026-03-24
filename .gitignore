@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.tox/
+.venv/
+venv/
+env/
+
+# Jupyter / Databricks
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Databricks logs & checkpoints
+_delta_log/
+*.crc
+
+# Environment / secrets
+.env
+*.env
+*.pem
+*.key
+secrets.yml
+credentials.json
+
+# Data (large binary files — use Databricks DBFS or DVC instead)
+data/raw/
+data/processed/
+*.parquet
+*.orc
+
+# Terraform (if used for infra-as-code)
+.terraform/
+*.tfstate
+*.tfstate.backup

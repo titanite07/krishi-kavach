@@ -1,0 +1,17 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Krishi-Kavach — Python Dependencies
+#
+# NOTE: All notebooks run inside Databricks Runtime (DBR 12.x+).
+#       PySpark and Delta Lake are pre-installed on the cluster.
+#       This file lists packages needed for LOCAL development / linting only.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# PySpark (pin to match your Databricks Runtime version)
+pyspark==3.5.0
+
+# Visualisation (pre-installed on Databricks, listed here for local env)
+matplotlib>=3.7.0
+pandas>=2.0.0
+
+# Delta Lake (for local unit testing outside Databricks)
+delta-spark==3.1.0
