@@ -2,6 +2,9 @@
 # MAGIC %md
 # MAGIC # Krishi-Kavach | 02 — Silver Layer · Triangulation Engine (Production)
 # MAGIC **Purpose:** Process Bronze tables and triangulate 3 signals (Weather, Market, Social) to compute a high-confidence parametric insurance trigger.
+# MAGIC 
+# MAGIC ### 🐛 Bugfix Note (v2.1): 
+# MAGIC Switched from day-of-month joins to full `event_date` joins to prevent cross-month data corruption.
 | Signal | Component | Source Table | Weight |
 |--------|-----------|--------------|--------|
 | Signal A | Weather Anomaly | `imd_rainfall` | 50% |
@@ -11,10 +14,7 @@
 # COMMAND ----------
 
 # ── Imports ──────────────────────────────────────────────────────────────────
-from pyspark.sql.functions import (
-    col, when, avg, count, max as spark_max, 
-    lit, round as spark_round, expr
-)
+from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -24,80 +24,108 @@ SILVER_SINK = "dbfs:/FileStore/krishi_kavach/silver/confirmed_triggers"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Signal A: Weather Score (50%)
-# MAGIC *Logic: Detect relative rainfall spikes or drought events against a 7-day rolling baseline.*
+# MAGIC ## 1. Load & Pre-process Datasets (Bugfix: Harmonize District & Date)
 
 # COMMAND ----------
 
-df_imd = spark.read.format("delta").load(f"{BRONZE_BASE}/imd_rainfall")
+# ── Load Bronze Tables ────────────────────────────────────────────────────────
+df_rain_raw  = spark.read.format("delta").load(f"{BRONZE_BASE}/district_daily_rainfall")
+df_mandi_raw = spark.read.format("delta").load(f"{BRONZE_BASE}/mandi_prices")
+df_kcc_raw   = spark.read.format("delta").load(f"{BRONZE_BASE}/kcc_2022")
 
-# Window: partition by district, order by date, look back 6 days + current day
-window_7d = Window.partitionBy("district").orderBy("date").rowsBetween(-6, 0)
+# ── Month Abbreviation Mapping ───────────────────────────────────────────────
+month_map = F.create_map([F.lit(x) for x in [
+    "Jan", "1", "Feb", "2", "Mar", "3", "Apr", "4", "May", "5", "Jun", "6",
+    "Jul", "7", "Aug", "8", "Sep", "9", "Oct", "10", "Nov", "11", "Dec", "12"
+]])
+
+# ── Standardize Rainfall (Signal A) ──────────────────────────────────────────
+# Bugfix: Construct full event_date from year + month abbreviation + day
+df_rain_processed = (
+    df_rain_raw
+    .withColumn("month_int", month_map[F.col("month")].cast("int"))
+    .withColumn("event_date", F.make_date(F.col("year").cast("int"), F.col("month_int"), F.col("day").cast("int")))
+    .withColumn("district_key", F.upper(F.trim(F.col("district"))))
+    .dropna(subset=["event_date", "district_key"])
+)
+
+# ── Standardize Mandi Prices (Signal B) ───────────────────────────────────────
+df_mandi_processed = (
+    df_mandi_raw
+    .withColumn("event_date", F.to_date(F.col("date"))) # Renaming to common join key
+    .withColumn("district_key", F.upper(F.trim(F.col("district"))))
+    .dropna(subset=["event_date", "district_key"])
+)
+
+# ── Standardize KCC Queries (Signal C) ────────────────────────────────────────
+df_kcc_processed = (
+    df_kcc_raw
+    .withColumn("event_date", F.to_date(F.col("date"))) # Standardizing to event_date
+    .withColumn("district_key", F.upper(F.trim(F.col("district"))))
+    .dropna(subset=["event_date", "district_key"])
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 2. Signal A: Weather Score (50%)
+
+# COMMAND ----------
+
+# Window: partition by district_key, order by event_date, look back 6 days + current day
+window_7d = Window.partitionBy("district_key").orderBy("event_date").rowsBetween(-6, 0)
 
 df_signal_a = (
-    df_imd
-    .withColumn("rain_7d_avg", avg("rainfall_mm").over(window_7d))
+    df_rain_processed
+    .withColumn("rain_7d_avg", F.avg("rainfall_mm").over(window_7d))
     .withColumn("rain_score", 
-        when(col("rainfall_mm") > (col("rain_7d_avg") * 2.0), 1.0)      # Extreme Spike
-        .when(col("rainfall_mm") < (col("rain_7d_avg") * 0.1), 0.8)      # Severe Dry Spell
+        F.when(F.col("rainfall_mm") > (F.col("rain_7d_avg") * 2.0), 1.0) # Extreme Spike
+        .when(F.col("rainfall_mm") < (F.col("rain_7d_avg") * 0.1), 0.8) # Severe Dry Spell
         .otherwise(0.0)
     )
-    .select("district", "date", "rainfall_mm", "rain_7d_avg", "rain_score")
+    .select("district_key", "event_date", "rainfall_mm", "rain_7d_avg", "rain_score")
 )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Signal B: Market Stress Score (25%)
-# MAGIC *Logic: Monitor Mandi price spikes and volume drops against a 30-day rolling baseline.*
+# MAGIC ## 3. Signal B: Market Stress Score (25%)
 
 # COMMAND ----------
 
-df_mandi = spark.read.format("delta").load(f"{BRONZE_BASE}/mandi_prices")
-
-# Window: partition by district and commodity for accurate historical commodity trends
-window_30d = Window.partitionBy("district", "commodity").orderBy("date").rowsBetween(-29, 0)
+# Window: partition by district_key and commodity
+window_30d = Window.partitionBy("district_key", "commodity").orderBy("event_date").rowsBetween(-29, 0)
 
 df_mandi_base = (
-    df_mandi
-    .withColumn("price_30d_avg",   avg("modal_price").over(window_30d))
-    .withColumn("arrival_30d_avg", avg("arrivals_tonnes").over(window_30d))
-    # Flags: High Price (>30%) or Low Volume (<50%)
-    .withColumn("price_spike_flag", when(col("modal_price")     > (col("price_30d_avg")   * 1.3), 1.0).otherwise(0.0))
-    .withColumn("arrival_dip_flag", when(col("arrivals_tonnes") < (col("arrival_30d_avg") * 0.5), 1.0).otherwise(0.0))
-    # Combine signals per market entry
-    .withColumn("raw_price_score", (col("price_spike_flag") * 0.5) + (col("arrival_dip_flag") * 0.5))
+    df_mandi_processed
+    .withColumn("price_30d_avg",   F.avg("modal_price").over(window_30d))
+    .withColumn("arrival_30d_avg", F.avg("arrivals_tonnes").over(window_30d))
+    .withColumn("price_spike_flag", F.when(F.col("modal_price")     > (F.col("price_30d_avg")   * 1.3), 1.0).otherwise(0.0))
+    .withColumn("arrival_dip_flag", F.when(F.col("arrivals_tonnes") < (F.col("arrival_30d_avg") * 0.5), 1.0).otherwise(0.0))
+    .withColumn("raw_price_score", (F.col("price_spike_flag") * 0.5) + (F.col("arrival_dip_flag") * 0.5))
 )
 
-# Aggregate to District+Date level (taking the highest stress across commodities)
 df_signal_b = (
     df_mandi_base
-    .groupBy("district", "date")
-    .agg(spark_max("raw_price_score").alias("price_score"))
+    .groupBy("district_key", "event_date")
+    .agg(F.max("raw_price_score").alias("price_score"))
 )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Signal C: Social Distress Score (25%)
-# MAGIC *Logic: Measure farmer inquiry volume relating to weather/pest/disease categories.*
+# MAGIC ## 4. Signal C: Social Distress Score (25%)
 
 # COMMAND ----------
 
-df_kcc = spark.read.format("delta").load(f"{BRONZE_BASE}/kcc_2022")
-
-stress_categories = ['Weather', 'Pest', 'Disease', 'Flood']
-
 df_signal_c = (
-    df_kcc
-    .filter(col("category").isin(stress_categories))
-    .groupBy("district", "date")
-    .agg(count("*").alias("stress_query_count"))
-    # Conditional scoring based on inquiry density
+    df_kcc_processed
+    .groupBy("district_key", "event_date")
+    .agg(F.count("*").alias("stress_query_count"))
     .withColumn("kcc_stress_score", 
-        when(col("stress_query_count") >= 10, 1.0)
-        .when(col("stress_query_count") >= 5,  0.6)
-        .when(col("stress_query_count") >= 2,  0.3)
+        F.when(F.col("stress_query_count") >= 10, 1.0)
+        .when(F.col("stress_query_count") >= 5,  0.6)
+        .when(F.col("stress_query_count") >= 2,  0.3)
         .otherwise(0.0)
     )
 )
@@ -105,57 +133,54 @@ df_signal_c = (
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Final Triangulation & Confidence Scoring
+# MAGIC ## 5. Fixed Join & Confidence Computation
+# MAGIC *Bugfix: Using [district_key, event_date] to ensure temporal alignment.*
 
 # COMMAND ----------
 
-# Join strategy: Outer join on district+date, using Rainfall as primary time-series spine
+print(f"DEBUG: Rainfall Base Count : {df_signal_a.count():,}")
+
 df_triangulated = (
     df_signal_a.alias("a")
-    .join(df_signal_b.alias("b"), ["district", "date"], "left")
-    .join(df_signal_c.alias("c"), ["district", "date"], "left")
-    # Fill missing scores with 0.0 assuming no signal = no stress
+    .join(df_signal_b.alias("b"), ["district_key", "event_date"], "left")
+    .join(df_signal_c.alias("c"), ["district_key", "event_date"], "left")
     .fillna(0.0, subset=["price_score", "kcc_stress_score", "stress_query_count"])
-    # Weighted Multi-Signal Computation
     .withColumn("confidence_score", 
-        spark_round(
-            (col("rain_score") * 0.50) + 
-            (col("price_score") * 0.25) + 
-            (col("kcc_stress_score") * 0.25), 
+        F.round(
+            (F.col("rain_score") * 0.50) + 
+            (F.col("price_score") * 0.25) + 
+            (F.col("kcc_stress_score") * 0.25), 
         4)
     )
-    .withColumn("is_valid_trigger", when(col("confidence_score") >= 0.60, True).otherwise(False))
+    .withColumn("is_valid_trigger", F.when(F.col("confidence_score") >= 0.60, True).otherwise(False))
 )
+
+# ── Validation ───────────────────────────────────────────────────────────────
+count_after = df_triangulated.count()
+null_confidence = df_triangulated.filter(F.col("confidence_score").isNull()).count()
+
+print(f"DEBUG: Rows after join     : {count_after:,}")
+print(f"DEBUG: Null confidence     : {null_confidence}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Write Confirmed Triggers & Reporting
+# MAGIC ## 6. Write Confirmed Triggers
 
 # COMMAND ----------
 
-# Filter only validated trigger events
 df_confirmed = (
     df_triangulated
-    .filter(col("is_valid_trigger") == True)
-    .orderBy(col("confidence_score").desc())
+    .filter(F.col("is_valid_trigger") == True)
+    .orderBy(F.col("confidence_score").desc())
 )
 
-# Write to Silver layer
 (df_confirmed.write
    .format("delta")
    .mode("overwrite")
    .option("overwriteSchema", "true")
    .save(SILVER_SINK))
 
-# ── Summary Reports ──────────────────────────────────────────────────────────
-total_confirmed = df_confirmed.count()
-print(f"✅  SILVER LAYER COMPLETE")
-print(f"📊  TOTAL CONFIRMED TRIGGERS : {total_confirmed:,}")
-
-print("\n🚀 TOP 20 CONFIDENCE TRIGGERS:")
+print(f"✅  SILVER BUGFIX COMPLETE")
+print(f"📊  TOTAL VALID TRIGGERS : {df_confirmed.count():,}")
 display(df_confirmed.limit(20))
-
-print("\n📍 BREAKDOWN: TRIGGERS PER DISTRICT:")
-df_breakdown = df_confirmed.groupBy("district").count().orderBy("count", ascending=False)
-display(df_breakdown)

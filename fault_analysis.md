@@ -1,48 +1,44 @@
-# Krishi-Kavach Fault Analysis Report
+# Krishi-Kavach | Fault Analysis Report
 
-After reviewing the code in the Bronze, Silver, and Gold layers of the Databricks pipeline, I have identified several **critical analytical faults** and vulnerabilities that completely invalidate the pipeline's logic in its current state. 
+This analysis identifies potential failure points, technical risks, and architectural vulnerabilities in the current version (v2.0) of the Krishi-Kavach pipeline.
 
-Here is a breakdown of the identified faults:
+## 1. Data Integrity & Join Risks
+### ⚠️ District Naming Inconsistency
+The system relies on an exact or `upper()` join on `district`.
+- **Fault**: Sources (IMD, Mandi, PMFBY, KCC) have different nomenclatures (e.g., "Allahabad" vs "Prayagraj").
+- **Impact**: Significant loss of signal due to "silent" join failures where records are dropped because names don't match exactly.
+- **Mitigation**: Implement a Levenshtein-based fuzzy matching layer or a master Cross-Reference Table (CRT) for Indian districts.
 
-## 🚨 Critical Analytical Faults (Silver Layer)
+## 2. Algorithmic Vulnerabilities
+### 📉 Static Threshold Sensitivity
+The Silver layer uses hardcoded thresholds (e.g., `confidence_score >= 0.6` and `price_spike > 1.3`).
+- **Fault**: Commodity prices exhibit seasonal and regional variance. A 30% spike in one crop might be normal, while in another it’s catastrophic.
+- **Impact**: False negatives during high-inflation periods or false positives for volatile crops (e.g., Onions).
+- **Mitigation**: Switch to Z-score (standard deviation) based anomalies instead of static percentage multipliers.
 
-### 1. Incomplete Date Joins (Cross-Joining Unrelated Months)
-In [02_silver_layer.py](file:///c:/Users/Lochan%20Gowda/Data%20Bricks%20hackathon/notebooks/02_silver_layer.py), the final join between Rainfall (r), Prices (p), and KCC queries (k) attempts to join on the day of the month without accounting for the actual month or year.
+### 🧩 Weighted Signal Dependencies
+Signal A (Weather) carries 50% weight.
+- **Fault**: If the IMD sensor network in a remote district fails or reports zero rainfall as `null`, the trigger becomes nearly impossible to reach regardless of Market/Social signals.
+- **Impact**: System-wide blind spots in regions with poor sensor coverage.
 
-```python
-# FAULTY LOGIC
-.join(df_price_events.alias("p"), 
-      (expr("upper(r.district) = upper(p.District)")) & 
-      (col("r.day") == dayofmonth(col("p.Arrival_Date"))), "left")
-```
-**Impact:** A rainfall event on **July 15** will mistakenly match with a price spike on **January 15**, **March 15**, etc. This corrupts the entire `confidence_score` calculation with randomized overlapping data.
-**Fix required:** Construct a proper Date column in `df_rain` and `df_kcc` (incorporating year, month, and day) and join strictly on Date.
+## 3. Fraud and Manipulation Gaps
+### 🕵️ Sophisticated Sybil Attacks
+The [fraud_guard.py](file:///d:/Projects/Krishi-Kavach/notebooks/fraud_guard.py) checks for bulk `device_id` submissions.
+- **Fault**: A coordinated "Social-only" attack using many distributed devices (different IPs/IDs) could bypass the "5 per device" rule.
+- **Impact**: Potential for organized gaming of the payout system during minor dry spells.
+- **Mitigation**: Add spatial clustering analysis (if many device inquiries originate from the same GPS geofence).
 
-### 2. Broken Time-Series Window Function (Alphabetical Month Sorting)
-In [02_silver_layer.py](file:///c:/Users/Lochan%20Gowda/Data%20Bricks%20hackathon/notebooks/02_silver_layer.py), the 7-day rolling window for finding dry spells orders rows by `month` and `day`. However, `month` is a `StringType` in the Bronze layer schema (e.g., "Jan", "Feb").
+## 4. Performance & Scalability
+### 🐘 Heavy CSV Dependencies
+The 7.8GB KCC dataset was processed via a `fast-seek` hack locally.
+- **Fault**: In a production CI/CD environment, the pipeline currently expects pre-cleansed CSVs in DBFS.
+- **Impact**: The initial conversion of NetCDF to CSV and 8GB filtering is currently a manual/scripted bottleneck.
+- **Mitigation**: Transition to **Autoloader** (Spark Structured Streaming) to ingest files as they land, rather than batch-processing 8GB CSVs.
 
-```python
-# FAULTY LOGIC
-Window.partitionBy("state", "district").orderBy("month", "day").rowsBetween(-7, 0)
-```
-**Impact:** Strings are ordered alphabetically. "Apr" comes before "Aug", which comes before "Dec", which comes before "Jan". The 7-day rolling window will compute across discontinuous, chronologically incorrect boundaries.
-**Fix required:** Convert the `month` string to an integer representation or real Date before applying window functions.
-
----
-
-## ⚠️ Medium/High Vulnerabilities
-
-### 1. Schema Case-Sensitivity and Implicit Joins
-- The Bronze schema definitions use exact casing (e.g. `DistrictName` for KCC, `district` for IMD). 
-- In the Gold layer ([03_gold_payout_viz.py](file:///c:/Users/Lochan%20Gowda/Data%20Bricks%20hackathon/notebooks/03_gold_payout_viz.py)), the state join uses `col("t.state") == col("p.state_name")`. If capitalization or spelling differs slightly (e.g., "Madhya pradesh" vs "MADHYA PRADESH"), the join will silently drop triggers, directly impacting rural insurance payouts.
-
-### 2. Missing Error Handling & Hardcoded Paths (Bronze Layer)
-In [01_bronze_layer.py](file:///c:/Users/Lochan%20Gowda/Data%20Bricks%20hackathon/notebooks/01_bronze_layer.py), the `spark.read` commands assume every CSV exists perfectly at the specified paths. If a file is missing or corrupted, the notebook completely crashes instead of logging the error or skipping cleanly.
-
-### 3. Static Configuration
-Variables like `CONFIDENCE_THRESHOLD = 0.6` in Silver and the `0.1` payout multiplier in Gold are hardcoded directly into script logic rather than passed as dynamic widget inputs, limiting backtesting and parameter tuning capabilities.
-
----
-
-## 💡 Recommendation
-I highly recommend fixing the **Date join** and **Window ordering** bugs immediately. Would you like me to write the fixes for the [02_silver_layer.py](file:///c:/Users/Lochan%20Gowda/Data%20Bricks%20hackathon/notebooks/02_silver_layer.py) script?
+## 5. Summary Table
+| Risk Area | Severity | Likelihood | Mitigation Effort |
+|-----------|----------|------------|-------------------|
+| District Mapping | High | High | Medium |
+| Static Thresholds | Medium | High | High |
+| Data Silos (nulls) | Medium | Medium | Low |
+| Fraud (Sybil) | High | Low | High |
